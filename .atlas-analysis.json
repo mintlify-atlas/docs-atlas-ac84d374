@@ -1,0 +1,75 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "Ritual",
+  "projectDescription": "A simple, flexible 4chan/vichan archiver with configurable filtering and media downloading.",
+  "theme": "aspen",
+  "primaryColor": "#2563eb",
+  "lightColor": "#60a5fa",
+  "darkColor": "#1e40af",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get Started",
+        "pages": [
+          "introduction",
+          "installation",
+          "quickstart"
+        ]
+      },
+      {
+        "group": "Configuration",
+        "pages": [
+          "configuration/overview",
+          "configuration/board-filters",
+          "configuration/database",
+          "configuration/media-downloading",
+          "configuration/advanced"
+        ]
+      },
+      {
+        "group": "Usage",
+        "pages": [
+          "usage/running-archiver",
+          "usage/scanner-tool",
+          "usage/state-management"
+        ]
+      },
+      {
+        "group": "Reference",
+        "pages": [
+          "reference/architecture",
+          "reference/database-schema",
+          "reference/core-modules"
+        ]
+      },
+      {
+        "group": "Guides",
+        "pages": [
+          "guides/troubleshooting",
+          "guides/backups",
+          "guides/migration"
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Flexible board filtering with regex blacklist/whitelist",
+    "Selective media downloading (text, thumbnails, full media)",
+    "Asagi schema support for SQLite and MySQL",
+    "Duplicate media detection and MD5 verification",
+    "File scanner tool for metadata extraction",
+    "Configurable cooldowns and rate limiting"
+  ],
+  "publicApiSurface": [
+    "main.py - Main archiver entry point",
+    "scanner/scanner.py - Media file scanner CLI",
+    "configs.py - Configuration file",
+    "db.ritual.RitualDb - Database interface",
+    "Archive - Archive.json fetcher",
+    "Catalog - Catalog.json processor",
+    "Filter - Thread and media filtering",
+    "Posts - Post fetching and persistence",
+    "Fetcher - HTTP client with rate limiting",
+    "State - Thread state management"
+  ]
+}
