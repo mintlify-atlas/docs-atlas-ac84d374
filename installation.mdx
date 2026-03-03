@@ -1,0 +1,157 @@
+---
+title: Installation
+description: Install Ritual and set up the required dependencies and database schema
+---
+
+# Installation
+
+This guide will walk you through installing Ritual and setting up all required dependencies.
+
+## Requirements
+
+<Note>
+Ritual requires **Python 3.12 or higher**. Make sure you have the correct version installed before proceeding.
+</Note>
+
+You'll also need:
+- `git` for cloning the repository
+- A database (SQLite or MySQL)
+- Optional: `screen` for running Ritual persistently
+
+## Installation steps
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the Ritual repository to your local machine:
+    
+    ```bash
+    git clone https://github.com/sky-cake/ritual
+    cd ritual
+    ```
+  </Step>
+
+  <Step title="Create a virtual environment">
+    Create and activate a Python virtual environment using `uv` or `venv`:
+    
+    <CodeGroup>
+    ```bash Using uv (recommended)
+    uv venv
+    source .venv/bin/activate
+    ```
+    
+    ```bash Using venv
+    python3.12 -m venv .venv
+    source .venv/bin/activate
+    ```
+    </CodeGroup>
+    
+    <Note>
+    The `uv` tool is a fast Python package installer. Install it with `pip install uv` if you don't have it.
+    </Note>
+  </Step>
+
+  <Step title="Install dependencies">
+    Install the required Python packages from `requirements.txt`:
+    
+    <CodeGroup>
+    ```bash Using uv
+    uv pip install -r requirements.txt
+    ```
+    
+    ```bash Using pip
+    pip install -r requirements.txt
+    ```
+    </CodeGroup>
+    
+    The `requirements.txt` file includes:
+    - `requests>=2.32.5` - HTTP library for fetching data from 4chan
+    - `msgspec>=0.20.0` - Fast JSON serialization library
+    - `mysql-connector-python==9.5.0` - MySQL driver (commented out by default)
+    
+    <Warning>
+    If you're using MySQL instead of SQLite, uncomment the `mysql-connector-python` line in `requirements.txt` before installing.
+    </Warning>
+  </Step>
+
+  <Step title="Set up database schema">
+    Ritual uses the Asagi schema for database tables. Configure and install it using the provided script:
+    
+    ```bash
+    # Configure database settings in the script
+    ./install_asagi_tables.sh
+    ```
+    
+    The script will:
+    1. Clone the [asagi-tables](https://github.com/sky-cake/asagi-tables) repository
+    2. Create a configuration file at `asagi-tables/asagi.toml`
+    3. Install the asagi-tables package with your chosen database driver
+    
+    **Configuration options in the script:**
+    
+    ```toml
+    [db]
+    db_type = 'sqlite' # or 'mysql' or 'postgresql'
+    echo = false
+    
+    [db.sqlite]
+    database = 'path/to/file.db'
+    
+    [db.mysql]
+    host = '127.0.0.1'
+    port = 3306
+    db = 'asagi'
+    user = 'asagi'
+    password = 'asagi'
+    minsize = 1
+    maxsize = 50
+    ```
+    
+    <Tip>
+    For most users, SQLite is the easiest option and requires no additional setup. Use MySQL if you need better performance for high-volume archiving.
+    </Tip>
+  </Step>
+
+  <Step title="Create configuration file">
+    Copy the template configuration file and customize it:
+    
+    ```bash
+    cp rename_to_configs.py configs.py
+    ```
+    
+    You'll need to edit `configs.py` to configure:
+    - Which boards to archive
+    - Filtering rules (whitelist/blacklist)
+    - Media download preferences
+    - Database settings
+    
+    See the [Quick start guide](/quickstart) for configuration examples.
+  </Step>
+</Steps>
+
+## Verify installation
+
+After completing the installation steps, verify everything is set up correctly:
+
+```bash
+python3.12 -c "import requests, msgspec; print('Dependencies OK')"
+```
+
+If you see `Dependencies OK`, you're ready to configure and run Ritual.
+
+## Optional: Install screen
+
+If you want Ritual to run persistently in the background (surviving terminal disconnects), install `screen`:
+
+```bash
+sudo apt install screen  # Debian/Ubuntu
+# or
+brew install screen       # macOS
+```
+
+See the [Quick start guide](/quickstart#using-screen-for-persistence) for how to use screen with Ritual.
+
+## Next steps
+
+<Card title="Quick start" icon="rocket" href="/quickstart">
+  Configure your first board and start archiving threads
+</Card>

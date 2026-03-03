@@ -1,0 +1,264 @@
+---
+title: Board filters
+description: Filter threads using blacklists, whitelists, and content-based rules
+---
+
+Ritual provides powerful filtering capabilities to archive only the content you want. You can filter threads based on their subject, comment text, and content quality.
+
+## Filter types
+
+Ritual supports three types of filters that work together:
+
+### Blacklist filters
+
+Blacklist patterns **exclude** threads from archiving. If a thread's subject or comment matches the blacklist regex, it will be skipped.
+
+```python
+boards = {
+    'g': {
+        'blacklist': '.*(local models|install gentoo).*',
+    },
+}
+```
+
+This configuration skips any `/g/` thread that mentions "local models" or "install gentoo" in the subject or comment.
+
+### Whitelist filters
+
+Whitelist patterns **include** only matching threads. If a whitelist is specified, only threads that match will be archived.
+
+```python
+boards = {
+    'ck': {
+        'whitelist': '.*Coffee Time General.*',
+    },
+}
+```
+
+This configuration archives only threads from `/ck/` that mention "Coffee Time General".
+
+### Content quality filters
+
+Content filters remove low-quality or spam threads based on comment length and character diversity:
+
+```python
+boards = {
+    'biz': {
+        'op_comment_min_chars': 4,
+        'op_comment_min_chars_unique': 3,
+    },
+}
+```
+
+- `op_comment_min_chars`: Minimum total characters in OP comment (skips "lol", "omg", ".")
+- `op_comment_min_chars_unique`: Minimum unique characters in OP comment (skips "aaaaa", "hahaha")
+
+## Filter precedence
+
+<Note>
+Filters are evaluated in a specific order. Understanding this order is critical for building effective configurations.
+</Note>
+
+<Steps>
+  <Step title="Content quality filters apply first">
+    `op_comment_min_chars` and `op_comment_min_chars_unique` are checked before blacklist/whitelist patterns.
+    
+    ```python
+    # Thread with comment "hi" is skipped before checking blacklist/whitelist
+    'op_comment_min_chars': 10
+    ```
+  </Step>
+  
+  <Step title="Blacklist takes precedence over whitelist">
+    If a thread matches **both** blacklist and whitelist, it will **not** be archived.
+    
+    ```python
+    # Thread about "linux local models" is NOT archived (blacklist wins)
+    'blacklist': '.*(local models).*',
+    'whitelist': '.*(linux).*',
+    ```
+  </Step>
+  
+  <Step title="List behavior depends on what's configured">
+    - **Only blacklist**: Archive everything except blacklisted threads
+    - **Only whitelist**: Archive only whitelisted threads
+    - **Both lists**: Archive whitelisted threads that don't match blacklist
+    - **No lists**: Archive all threads (subject to content filters)
+  </Step>
+</Steps>
+
+## Regex patterns
+
+Filters use Python regular expressions with case-insensitive matching (`re.IGNORECASE`).
+
+### Basic patterns
+
+```python
+# Exact phrase
+'whitelist': '.*General Thread.*'
+
+# Multiple alternatives (OR)
+'blacklist': '.*(pattern1|pattern2|pattern3).*'
+
+# Word boundaries
+'whitelist': r'.*\blinux\b.*'  # Matches "linux" but not "linuxxx"
+```
+
+### Advanced patterns
+
+```python
+# Threads about specific topics
+'whitelist': '.*(self.host|homelab|home.?server).*'
+
+# Exclude multiple unwanted topics
+'blacklist': '.*(low.?effort|shitpost|bait).*'
+
+# Match specific formats
+'whitelist': r'.*\[.*\].*'  # Threads with [tags]
+```
+
+<Tip>
+Test your regex patterns using Python's `re` module before deploying:
+
+```python
+import re
+pattern = '.*(home server|linux).*'
+text = "Home server thread"
+print(bool(re.search(pattern, text, re.IGNORECASE)))  # True
+```
+</Tip>
+
+## Real-world examples
+
+Here are complete configurations from `rename_to_configs.py`:
+
+### Targeted archiving with media filters
+
+```python
+'g': {
+    'blacklist': '.*(local models).*',
+    'whitelist': '.*(home server|linux).*',
+    'thread_text': True,
+    'dl_fm_thread': '.*(wireguard).*',
+    'dl_fm_post': '.*(wireguard).*',
+    'dl_fm_op': '.*(wireguard).*',
+},
+```
+
+Archives `/g/` threads about "home server" or "linux" (but not "local models"), and downloads full media only from posts mentioning "wireguard".
+
+### Specific general threads
+
+```python
+'ck': {
+    'whitelist': '.*Coffee Time General.*',
+    'thread_text': True,
+    'dl_th_post': True,
+    'dl_fm_post': False,
+},
+```
+
+Archives only "Coffee Time General" threads from `/ck/`, with text and thumbnails (no full media).
+
+### Quality filtering
+
+```python
+'biz': {
+    'thread_text': True,
+    'op_comment_min_chars': 4,
+    'op_comment_min_chars_unique': 3,
+},
+```
+
+Archives all `/biz/` threads except those with very short or repetitive OP comments (filters out "lol", "aaaaa", etc.).
+
+### Everything from a board
+
+```python
+'gif': {
+    # No filters - archives everything
+    # By default, thread_text is True and media downloads are disabled
+},
+```
+
+Archives all thread text from `/gif/` with no media files.
+
+## Filter matching behavior
+
+Filters check both the thread subject (`sub`) and comment (`com`) fields:
+
+```python
+# This thread matches if EITHER subject OR comment contains the pattern
+Thread: {
+    'sub': 'Linux General',  # ← Checked
+    'com': 'Discuss your favorite distro',  # ← Also checked
+}
+```
+
+The filter matches if the pattern is found in **either field**.
+
+## Common patterns
+
+<AccordionGroup>
+  <Accordion title="Archive general threads only">
+    ```python
+    'whitelist': '.*(general|/.*g/).*',
+    ```
+  </Accordion>
+  
+  <Accordion title="Exclude meme/shitpost threads">
+    ```python
+    'blacklist': '.*(meme|shitpost|bait|low.?effort).*',
+    ```
+  </Accordion>
+  
+  <Accordion title="Archive threads with specific tags">
+    ```python
+    'whitelist': r'.*\[weekly\].*',  # Threads with [weekly] tag
+    ```
+  </Accordion>
+  
+  <Accordion title="Filter by minimum engagement">
+    ```python
+    'op_comment_min_chars': 100,  # Substantial OP posts only
+    'op_comment_min_chars_unique': 50,  # Diverse content
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Testing filters
+
+To test your filters without archiving:
+
+<Steps>
+  <Step title="Enable ignore_http_cache">
+    ```python
+    ignore_http_cache = True
+    ```
+    This forces Ritual to re-evaluate all threads.
+  </Step>
+  
+  <Step title="Watch the logs">
+    Run Ritual and observe which threads are queued:
+    ```
+    [g] 42 thread(s) are modified and will be queued.
+    ```
+  </Step>
+  
+  <Step title="Disable media downloads">
+    Set all `dl_fm_*` and `dl_th_*` to `False` to test filters without downloading media.
+  </Step>
+  
+  <Step title="Use thread_text: False for dry run">
+    Prevents database writes while you test:
+    ```python
+    'thread_text': False,
+    ```
+  </Step>
+</Steps>
+
+## Next steps
+
+<Card title="Media downloading" icon="images" href="/configuration/media-downloading">
+  Learn how to configure selective media downloading for archived threads
+</Card>

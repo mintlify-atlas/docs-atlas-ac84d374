@@ -1,0 +1,788 @@
+---
+title: Migration Guide
+description: Migrate from other archivers and between database systems
+---
+
+## Overview
+
+This guide covers:
+
+- Migrating from Asagi-based archivers
+- Converting between SQLite and MySQL
+- Moving media files between systems
+- Updating configurations
+- Handling version upgrades
+
+<Tip>
+Ritual uses the Asagi schema, making it compatible with data from other Asagi-based archivers like FoolFuuka-based archives.
+</Tip>
+
+## Migrating from Asagi
+
+Ritual includes a migration script for Asagi databases.
+
+### Migration Script
+
+Location: `migrations/migrate_asagi.py`
+
+<Steps>
+
+<Step title="Configure paths">
+  
+  Edit `migrations/migrate_asagi.py`:
+  
+  ```python
+  # Set your paths!
+  db_path = '/home/USER/Documents/ritual/migrations/ritual_bk.db'
+  sql_file_path = '/home/USER/Documents/ritual/migrations/not_null_migration.sql'
+  ```
+  
+</Step>
+
+<Step title="Create backup">
+  
+  **Always backup before migration**:
+  ```bash
+  cp asagi.db ritual_bk.db
+  ```
+  
+</Step>
+
+<Step title="Run migration">
+  
+  ```bash
+  python3.12 migrate_asagi.py
+  ```
+  
+  The script will:
+  - Detect all board tables in your database
+  - Show you the boards found
+  - Wait for confirmation (Ctrl+C to cancel)
+  - Apply SQL migrations to each board
+  
+</Step>
+
+<Step title="Verify migration">
+  
+  ```bash
+  sqlite3 ritual_bk.db
+  ```
+  
+  ```sql
+  -- Check tables exist
+  .tables
+  
+  -- Check sample data
+  SELECT COUNT(*) FROM g;
+  SELECT * FROM g LIMIT 5;
+  ```
+  
+</Step>
+
+</Steps>
+
+### What the Migration Does
+
+The script (migrate_asagi.py:88-109):
+
+1. **Discovers boards**: Finds all tables matching 4chan board names
+2. **Applies schema updates**: Runs SQL migrations for Ritual compatibility
+3. **Preserves data**: All existing posts and media references are kept
+4. **Updates constraints**: Modifies NOT NULL constraints if needed
+
+<Accordion title="View migration code">
+
+```python
+def do_migration():
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    boards = [row[0] for row in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table';"
+    ).fetchall()]
+    boards = [b for b in boards if b in all_4chan_boards.keys()]
+    
+    input(f'Found {len(boards)} boards.\n\n{boards}.\n\n'
+          f'Do `CRTL-C` if NOT ok. Otherwise, hit enter.\n')
+    
+    for board in boards:
+        print(f'Running sql script for: {board}.')
+        with open(sql_file_path) as f:
+            sql = f.read()
+        sqls = sql.replace('%%BOARD%%', board).split(';')
+        for sql in sqls:
+            conn.execute(sql)
+        conn.commit()
+```
+
+</Accordion>
+
+### Post-Migration Steps
+
+<Steps>
+
+<Step title="Update configs.py">
+  
+  Point to the migrated database:
+  ```python
+  db_sqlite_path = make_path('ritual_bk.db')
+  ```
+  
+</Step>
+
+<Step title="Configure boards">
+  
+  Set up which boards to continue archiving:
+  ```python
+  boards = {
+      'g': {
+          'thread_text': True,
+          'dl_fm_op': True,
+      },
+      # Add other boards...
+  }
+  ```
+  
+</Step>
+
+<Step title="Test run">
+  
+  Start Ritual and verify it reads existing data:
+  ```bash
+  python3.12 main.py
+  ```
+  
+  Check logs for errors.
+  
+</Step>
+
+</Steps>
+
+## SQLite to MySQL Migration
+
+Migrating from SQLite to MySQL for better performance with large archives.
+
+### Prerequisites
+
+<Steps>
+
+<Step title="Install MySQL">
+  
+  ```bash
+  sudo apt-get install mysql-server
+  sudo systemctl start mysql
+  sudo systemctl enable mysql
+  ```
+  
+</Step>
+
+<Step title="Create database">
+  
+  ```bash
+  mysql -u root -p
+  ```
+  
+  ```sql
+  CREATE DATABASE ritual CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+  CREATE USER 'ritual_user'@'localhost' IDENTIFIED BY 'secure_password';
+  GRANT ALL PRIVILEGES ON ritual.* TO 'ritual_user'@'localhost';
+  FLUSH PRIVILEGES;
+  EXIT;
+  ```
+  
+</Step>
+
+<Step title="Install MySQL connector">
+  
+  In `requirements.txt`, uncomment:
+  ```
+  mysql-connector-python
+  ```
+  
+  Then:
+  ```bash
+  uv pip install mysql-connector-python
+  ```
+  
+</Step>
+
+</Steps>
+
+### Migration Methods
+
+#### Method 1: Using Ritual to Recreate Schema
+
+<Steps>
+
+<Step title="Export SQLite data">
+  
+  ```bash
+  sqlite3 ritual.db
+  ```
+  
+  ```sql
+  .mode insert
+  .output g_export.sql
+  SELECT * FROM g;
+  SELECT * FROM g_images;
+  SELECT * FROM g_threads;
+  -- Repeat for each board
+  .quit
+  ```
+  
+</Step>
+
+<Step title="Configure MySQL">
+  
+  In `configs.py`:
+  ```python
+  db_type = 'mysql'  # Change from 'sqlite'
+  
+  db_mysql_host = 'localhost'
+  db_mysql_user = 'ritual_user'
+  db_mysql_password = 'secure_password'
+  db_mysql_database = 'ritual'
+  db_mysql_port = 3306
+  ```
+  
+</Step>
+
+<Step title="Initialize schema">
+  
+  Run Ritual once to create tables:
+  ```bash
+  python3.12 main.py
+  ```
+  
+  Stop it after it creates tables (Ctrl+C).
+  
+</Step>
+
+<Step title="Import data">
+  
+  ```bash
+  mysql -u ritual_user -p ritual < g_export.sql
+  ```
+  
+</Step>
+
+</Steps>
+
+#### Method 2: Using MySQL Workbench
+
+MySQL Workbench has a migration wizard that can convert SQLite databases:
+
+1. Open MySQL Workbench
+2. Database → Migration Wizard
+3. Select SQLite as source
+4. Select MySQL as target
+5. Follow the wizard
+
+<Warning>
+Test the migrated data thoroughly. Schema differences between SQLite and MySQL may cause issues.
+</Warning>
+
+#### Method 3: Using sqlite3-to-mysql Tool
+
+```bash
+pip install sqlite3-to-mysql
+
+sqlite3mysql -f ritual.db -d ritual -u ritual_user -p
+```
+
+### Verify Migration
+
+<Accordion title="Data integrity checks">
+
+**Count records**:
+```sql
+-- SQLite
+SELECT 'g' as board, COUNT(*) as posts FROM g
+UNION
+SELECT 'biz', COUNT(*) FROM biz;
+
+-- MySQL (should match)
+SELECT 'g' as board, COUNT(*) as posts FROM g
+UNION
+SELECT 'biz', COUNT(*) FROM biz;
+```
+
+**Sample data comparison**:
+```sql
+-- Get same posts from both DBs
+SELECT num, thread_num, timestamp, title, comment 
+FROM g 
+WHERE num = 12345678;
+```
+
+**Check media references**:
+```sql
+SELECT COUNT(*) FROM g_images;
+SELECT COUNT(DISTINCT media_hash) FROM g WHERE media_hash IS NOT NULL;
+```
+
+</Accordion>
+
+## MySQL to SQLite Migration
+
+Migrating from MySQL to SQLite (useful for smaller archives or portability).
+
+### Export from MySQL
+
+```bash
+mysqldump -u ritual_user -p --compatible=ansi --skip-extended-insert ritual > ritual_export.sql
+```
+
+### Convert SQL Syntax
+
+MySQL and SQLite have syntax differences. Common conversions needed:
+
+```bash
+# Remove MySQL-specific syntax
+sed -i 's/ENGINE=InnoDB//g' ritual_export.sql
+sed -i 's/AUTO_INCREMENT//g' ritual_export.sql
+sed -i 's/DEFAULT CHARSET=utf8mb4//g' ritual_export.sql
+
+# Fix backticks (optional, both support them)
+sed -i 's/`/"/g' ritual_export.sql
+```
+
+### Import to SQLite
+
+<Steps>
+
+<Step title="Update configs.py">
+  
+  ```python
+  db_type = 'sqlite'
+  db_sqlite_path = make_path('ritual.db')
+  ```
+  
+</Step>
+
+<Step title="Create schema">
+  
+  Run Ritual to create empty tables:
+  ```bash
+  python3.12 main.py
+  ```
+  
+  Stop after table creation (Ctrl+C).
+  
+</Step>
+
+<Step title="Import data">
+  
+  ```bash
+  sqlite3 ritual.db < ritual_export.sql
+  ```
+  
+</Step>
+
+</Steps>
+
+## Moving Media Files
+
+### Between Systems
+
+Media files are portable - just copy the entire `media/` directory structure.
+
+<Steps>
+
+<Step title="Create archive on source">
+  
+  ```bash
+  tar -czf media_archive.tar.gz media/
+  ```
+  
+</Step>
+
+<Step title="Transfer to destination">
+  
+  **Via SCP**:
+  ```bash
+  scp media_archive.tar.gz user@new-server:/path/to/ritual/
+  ```
+  
+  **Via rsync** (faster, resumable):
+  ```bash
+  rsync -avhP media/ user@new-server:/path/to/ritual/media/
+  ```
+  
+</Step>
+
+<Step title="Extract on destination">
+  
+  ```bash
+  tar -xzf media_archive.tar.gz
+  ```
+  
+</Step>
+
+<Step title="Verify structure">
+  
+  ```bash
+  ls -la media/
+  # Should see: g/ biz/ etc.
+  
+  ls -la media/g/
+  # Should see: full_media/ thumbnail/
+  ```
+  
+</Step>
+
+<Step title="Fix permissions">
+  
+  ```bash
+  chmod -R 775 media/
+  chown -R $USER:$USER media/
+  ```
+  
+</Step>
+
+</Steps>
+
+### Changing Media Path
+
+If you want to move media to a different location:
+
+<Steps>
+
+<Step title="Move files">
+  
+  ```bash
+  mv media/ /new/path/media/
+  ```
+  
+</Step>
+
+<Step title="Update configs.py">
+  
+  ```python
+  media_save_path = '/new/path/media'  # Absolute path
+  # Or
+  media_save_path = make_path('..', 'external_drive', 'media')  # Relative
+  ```
+  
+</Step>
+
+<Step title="Verify">
+  
+  Start Ritual and check it finds existing media:
+  ```bash
+  python3.12 main.py
+  ```
+  
+  It should NOT re-download existing files.
+  
+</Step>
+
+</Steps>
+
+### Symlinking Media
+
+If media is on external storage:
+
+```bash
+ln -s /mnt/external_drive/ritual_media/ media
+```
+
+Ritual will follow the symlink transparently.
+
+## Configuration Migration
+
+### Between Versions
+
+When updating Ritual, compare your `configs.py` with new `rename_to_configs.py`:
+
+```bash
+# Save your current config
+cp configs.py configs_backup.py
+
+# Check for new options
+diff configs.py rename_to_configs.py
+```
+
+Add any new configuration options to your `configs.py`.
+
+### Board Configurations
+
+**Preserving custom configs** when migrating:
+
+```python
+# Old system configs.py
+boards = {
+    'g': {
+        'whitelist': '.*(linux|home server).*',
+        'thread_text': True,
+        'dl_fm_op': True,
+    }
+}
+
+# Copy to new system's configs.py
+boards = {
+    'g': {
+        'whitelist': '.*(linux|home server).*',
+        'thread_text': True,
+        'dl_fm_op': True,
+    },
+    # Add new boards as needed
+}
+```
+
+### URL Configurations
+
+If migrating between chan sites:
+
+<Accordion title="4chan to Lainchan example">
+
+**From** (4chan - default):
+```python
+url_catalog = "https://a.4cdn.org/{board}/catalog.json"
+url_thread = "https://a.4cdn.org/{board}/thread/{thread_id}.json"
+url_archive = "https://a.4cdn.org/{board}/archive.json"
+url_boards = "https://a.4cdn.org/boards.json"
+url_full_media = "https://i.4cdn.org/{board}/{image_id}{ext}"
+url_thumbnail = "https://i.4cdn.org/{board}/{image_id}s.jpg"
+```
+
+**To** (Lainchan):
+```python
+url_catalog = "https://lainchan.org/{board}/catalog.json"
+url_thread = "https://lainchan.org/{board}/res/{thread_id}.json"
+url_archive = "https://lainchan.org/{board}/archive.json"
+url_boards = "https://lainchan.org/boards.json"
+url_full_media = "https://lainchan.org/{board}/src/{image_id}{ext}"
+url_thumbnail = None  # Lainchan may not have thumbnails
+```
+
+</Accordion>
+
+## Version Upgrades
+
+### General Upgrade Process
+
+<Steps>
+
+<Step title="Backup everything">
+  
+  ```bash
+  # Database
+  sqlite3 ritual.db "VACUUM INTO 'pre_upgrade_backup.db'"
+  
+  # Media
+  rsync -avh media/ ../ritual_media_backup/
+  
+  # Config
+  cp configs.py configs_backup.py
+  
+  # State
+  tar -czf cache_backup.tar.gz cache/
+  ```
+  
+</Step>
+
+<Step title="Pull latest code">
+  
+  ```bash
+  cd /path/to/ritual
+  git pull origin main
+  ```
+  
+</Step>
+
+<Step title="Check dependencies">
+  
+  ```bash
+  # Review requirements.txt for changes
+  diff requirements.txt <(git show HEAD~1:requirements.txt)
+  
+  # Update dependencies
+  uv pip install -r requirements.txt
+  ```
+  
+</Step>
+
+<Step title="Review config changes">
+  
+  ```bash
+  diff configs.py rename_to_configs.py
+  ```
+  
+  Add any new required config options.
+  
+</Step>
+
+<Step title="Check migrations">
+  
+  Look in `migrations/` directory for any database migrations.
+  
+  Run required migrations:
+  ```bash
+  python3.12 migrations/migrate_whatever.py
+  ```
+  
+</Step>
+
+<Step title="Test run">
+  
+  ```bash
+  python3.12 main.py
+  ```
+  
+  Monitor logs for errors.
+  
+</Step>
+
+</Steps>
+
+### Rolling Back
+
+If upgrade fails:
+
+<Steps>
+
+<Step title="Stop Ritual">
+  
+  Press Ctrl+C or kill the process.
+  
+</Step>
+
+<Step title="Restore code">
+  
+  ```bash
+  git checkout HEAD~1  # Go back one commit
+  # Or
+  git checkout v1.2.3  # Go back to specific tag
+  ```
+  
+</Step>
+
+<Step title="Restore database">
+  
+  ```bash
+  cp pre_upgrade_backup.db ritual.db
+  ```
+  
+</Step>
+
+<Step title="Restore config">
+  
+  ```bash
+  cp configs_backup.py configs.py
+  ```
+  
+</Step>
+
+<Step title="Restart">
+  
+  ```bash
+  python3.12 main.py
+  ```
+  
+</Step>
+
+</Steps>
+
+## State File Migration
+
+### Fresh Start (Ignore Old State)
+
+If you want to ignore old state and reprocess everything:
+
+```bash
+# Delete state files
+rm -rf cache/
+
+# Set config for first run
+# In configs.py:
+ignore_thread_cache = True
+```
+
+Ritual will recreate state files from scratch.
+
+### Preserving State Between Systems
+
+When moving to a new system:
+
+```bash
+# On old system
+tar -czf ritual_state.tar.gz cache/
+
+# Transfer to new system
+scp ritual_state.tar.gz user@new-server:/path/to/ritual/
+
+# On new system
+tar -xzf ritual_state.tar.gz
+```
+
+<Tip>
+Preserving state helps avoid re-downloading unchanged threads, reducing API load.
+</Tip>
+
+## Troubleshooting Migration Issues
+
+### Schema Mismatch Errors
+
+**Error**: `no such column: ...` or `table ... has no column named ...`
+
+**Solution**:
+```sql
+-- Check schema
+.schema g
+
+-- Compare with expected schema from asagi-tables
+-- Re-run table creation if needed
+```
+
+### Character Encoding Issues
+
+**Symptoms**: Garbled text, emoji display issues
+
+**SQLite** - check encoding:
+```sql
+PRAGMA encoding;
+-- Should return: UTF-8
+```
+
+**MySQL** - ensure UTF8MB4:
+```sql
+SHOW CREATE DATABASE ritual;
+-- Should show: CHARACTER SET utf8mb4
+
+ALTER DATABASE ritual CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
+
+### Missing Media After Migration
+
+**Check media_hash matching**:
+```sql
+-- Count unique hashes in database
+SELECT COUNT(DISTINCT media_hash) FROM g WHERE media_hash IS NOT NULL;
+
+-- Count actual files
+-- (run in bash)
+find media/g/full_media -type f | wc -l
+```
+
+**Verify file paths**:
+```python
+# Test file path generation
+from utils import get_filepath, MediaType
+
+post = {'tim': 1234567890123, 'ext': '.jpg'}
+path = get_filepath('media', 'g', MediaType.full_media, post)
+print(path)
+# Should output: media/g/full_media/1234/56/1234567890123.jpg
+```
+
+### Permission Errors After Migration
+
+```bash
+# Fix all permissions
+chmod 664 ritual.db
+chmod -R 775 media/
+chmod -R 775 cache/
+
+# Fix ownership
+chown -R $USER:$USER .
+```

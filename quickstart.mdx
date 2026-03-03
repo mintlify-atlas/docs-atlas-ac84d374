@@ -1,80 +1,300 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick start
+description: Get started with Ritual and archive your first 4chan board
 ---
 
-## Get started in three steps
+# Quick start
 
-Get your documentation site running locally and make your first customization.
+This guide will help you configure Ritual and start archiving 4chan threads in minutes.
 
-### Step 1: Set up your local environment
+<Note>
+Make sure you've completed the [installation steps](/installation) before continuing.
+</Note>
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+## Configure your first board
+
+<Steps>
+  <Step title="Open the configuration file">
+    Open `configs.py` in your text editor. If you haven't created it yet:
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    ```bash
+    cp rename_to_configs.py configs.py
+    nano configs.py
+    ```
+  </Step>
+
+  <Step title="Set database type">
+    Choose your database type (SQLite or MySQL):
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    ```python
+    # SQLite (default - easiest option)
+    db_type = 'sqlite'
+    db_sqlite_path = make_path('ritual.db')
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    # Or MySQL (better performance for large archives)
+    db_type = 'mysql'
+    db_mysql_host = 'localhost'
+    db_mysql_user = 'user'
+    db_mysql_password = 'password'
+    db_mysql_database = 'ritual'
+    db_mysql_port = 3306
+    ```
+  </Step>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+  <Step title="Configure boards to archive">
+    Edit the `boards` dictionary to specify which boards and threads to archive. Here are some real examples from the codebase:
+    
+    **Example 1: Archive specific threads with media filtering**
+    
+    ```python
+    boards = {
+        'g': {
+            # Skip threads about "local models"
+            'blacklist': '.*(local models).*',
+            # Only archive threads about "home server" or "linux"
+            'whitelist': '.*(home server|linux).*',
+            
+            # Archive all text from matching threads
+            'thread_text': True,
+            
+            # Download full media if thread mentions "wireguard"
+            'dl_fm_thread': '.*(wireguard).*',
+            # Download full media if individual post mentions "wireguard"
+            'dl_fm_post': '.*(wireguard).*',
+            # Download full media if OP mentions "wireguard"
+            'dl_fm_op': '.*(wireguard).*',
+        },
+    }
+    ```
+    
+    **Example 2: Archive everything with text only (no media)**
+    
+    ```python
+    boards = {
+        'gif': {
+            # Archive all threads, text only
+            # By default, thread_text is True
+        },
+    }
+    ```
+    
+    **Example 3: Archive specific threads with thumbnails only**
+    
+    ```python
+    boards = {
+        'ck': {
+            # Only archive "Coffee Time General" threads
+            'whitelist': '.*Coffee Time General.*',
+            'thread_text': True,
+            # Download thumbnails for all posts
+            'dl_th_post': True,
+            # Don't download full media
+            'dl_fm_post': False,
+        },
+    }
+    ```
+    
+    **Example 4: Archive with OP media only**
+    
+    ```python
+    boards = {
+        't': {
+            'thread_text': True,
+            # Only download OP's full media and thumbnail
+            'dl_fm_op': True,
+            'dl_th_op': True,
+        },
+    }
+    ```
+    
+    **Example 5: Filter low-quality posts**
+    
+    ```python
+    boards = {
+        'biz': {
+            'thread_text': True,
+            # Skip OPs with less than 4 characters (filters "omg", ".", "lol")
+            'op_comment_min_chars': 4,
+            # Skip OPs with less than 3 unique characters (filters "lol", "hahaha", "aaaaa")
+            'op_comment_min_chars_unique': 3,
+        },
+    }
+    ```
+  </Step>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+  <Step title="Adjust rate limiting (optional)">
+    You can customize the cooldown periods to control how aggressively Ritual archives:
+    
+    ```python
+    request_cooldown_sec = 1.2   # Delay between API requests
+    loop_cooldown_sec = 30.0     # Delay between full board loops
+    video_cooldown_sec = 3.2     # Delay when downloading videos
+    image_cooldown_sec = 2.2     # Delay when downloading images
+    add_random = False           # Add random jitter to delays
+    ```
+    
+    <Warning>
+    Don't set these values too low. Respect 4chan's servers and avoid getting rate limited or banned.
+    </Warning>
+  </Step>
+</Steps>
 
-### Step 3: Go live
+## Understanding filter rules
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+The filtering system follows these rules in order:
+
+1. **Minimum character filters** - `op_comment_min_chars` and `op_comment_min_chars_unique` filter everything first
+2. **Blacklist takes precedence** - If a post is both blacklisted and whitelisted, it will not be archived
+3. **Blacklist only** - If only a blacklist is specified, skip blacklisted posts and archive everything else
+4. **Whitelist only** - If only a whitelist is specified, archive whitelisted posts and skip everything else
+5. **No filters** - If no whitelist or blacklist is specified, archive everything
+6. **Media filtering** - If a thread is marked for archiving, media downloads can be further filtered using `dl_th_*` and `dl_fm_*` configs
+
+### Media download options
+
+Each media type can be configured at three levels:
+
+- `dl_fm_op` / `dl_th_op` - Filter OP media only
+- `dl_fm_post` / `dl_th_post` - Filter individual post media
+- `dl_fm_thread` / `dl_th_thread` - Filter all media in the thread
+
+Where:
+- `dl` = download
+- `fm` = full media
+- `th` = thumbnail
+
+Values can be:
+- `True` - Download all media
+- `False` - Download no media
+- `'regex pattern'` - Download only if post/thread matches the pattern
+
+## Run the archiver
+
+Once you've configured your boards, start archiving:
+
+```bash
+python3.12 main.py
+```
+
+You should see output like:
+
+```
+INFO: Loaded boards.json from cache/boards.json
+INFO: 70 boards have archive support
+INFO: [g] 15 thread(s) are modified and will be queued.
+INFO: [g] Downloaded [full_media] media/g/1234567890123.jpg
+INFO: [g] Downloaded [thumbnail] media/g/1234567890123s.jpg
+```
+
+### What to expect
+
+When running, Ritual will:
+
+1. Load the board catalog from 4chan's API
+2. Apply your filters to determine which threads to archive
+3. Fetch thread data for modified threads
+4. Save post text and metadata to the database
+5. Download media files according to your configuration
+6. Wait for the `loop_cooldown_sec` period
+7. Repeat for the next board and loop
+
+The archiver tracks state between runs, so it won't re-download existing media or re-process unmodified threads.
+
+## Using screen for persistence
+
+If you want Ritual to keep running after you close your terminal, use `screen`:
+
+<Steps>
+  <Step title="Start a screen session">
+    ```bash
+    screen -S ritual
+    ```
+    
+    You may need to install screen first:
+    ```bash
+    sudo apt install screen
+    ```
+  </Step>
+
+  <Step title="Run Ritual">
+    Inside the screen session:
+    ```bash
+    python3.12 main.py
+    ```
+  </Step>
+
+  <Step title="Detach from screen">
+    Press `Ctrl+A`, then press `d` to detach from the screen session.
+    
+    Ritual will continue running in the background.
+  </Step>
+
+  <Step title="Reattach to screen">
+    To check on Ritual later:
+    ```bash
+    screen -r ritual
+    ```
+  </Step>
+</Steps>
+
+## Stop the archiver
+
+To gracefully stop Ritual:
+
+1. Press `Ctrl+C` in the terminal (or screen session)
+2. Ritual will save its state and close the database cleanly
+3. You'll see:
+   ```
+   INFO: Received interrupt signal
+   INFO: Saving state...
+   INFO: Done
+   INFO: Saving database...
+   INFO: Done
+   INFO: Exited while loop, ending program.
+   ```
+
+<Warning>
+Always use `Ctrl+C` to stop Ritual. Killing the process forcefully may result in incomplete database transactions.
+</Warning>
+
+## Verify your archive
+
+Check that threads are being archived:
+
+### SQLite
+
+```bash
+sqlite3 ritual.db "SELECT COUNT(*) FROM g;"
+```
+
+### MySQL
+
+```bash
+mysql -u user -p -e "USE ritual; SELECT COUNT(*) FROM g;"
+```
+
+Check downloaded media:
+
+```bash
+ls -lh media/g/
+```
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Configuration" icon="gear" href="/configuration/overview">
+    Learn about advanced filtering options and media download strategies
+  </Card>
+  
+  <Card title="Database" icon="database" href="/configuration/database">
+    Understand the Asagi schema and how to query your archive
+  </Card>
+  
+  <Card title="Scanner tool" icon="magnifying-glass" href="/usage/scanner-tool">
+    Use the built-in scanner to catalog and analyze media files
+  </Card>
+  
+  <Card title="Backups" icon="floppy-disk" href="/guides/backups">
+    Learn how to backup your archive database
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

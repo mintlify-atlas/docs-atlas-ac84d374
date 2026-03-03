@@ -1,0 +1,640 @@
+---
+title: Backups
+description: Backup strategies and best practices for Ritual archives
+---
+
+## Overview
+
+Regular backups are essential for protecting your archive data. Ritual stores data in:
+
+- **Database**: SQLite file or MySQL database (thread/post data)
+- **Media files**: Images, videos, and thumbnails in `media/` directory
+- **State files**: Cache files in `cache/` directory
+
+<Tip>
+Backup both the database AND media files. The database alone is not sufficient to restore a complete archive.
+</Tip>
+
+## SQLite Backups
+
+### Quick Backup Command
+
+The recommended backup method from the README:
+
+```bash
+sqlite3 /path/to/ritual.db "VACUUM INTO '/path/to/backup.db'"
+```
+
+### What VACUUM INTO Does
+
+<Steps>
+
+<Step title="Creates clean copy">
+  
+  Creates a new database file with:
+  - All data from the original
+  - Optimized structure (defragmented)
+  - No unused space
+  - No journal files
+  
+</Step>
+
+<Step title="Verifies integrity">
+  
+  Automatically checks database integrity during copy.
+  
+  If corruption exists, the command will fail before creating the backup.
+  
+</Step>
+
+<Step title="Atomic operation">
+  
+  The backup is created atomically - either completes successfully or fails cleanly.
+  
+</Step>
+
+</Steps>
+
+### Integrity Check
+
+Verify backup integrity (optional but recommended):
+
+```bash
+sqlite3 /path/to/backup.db 'PRAGMA integrity_check'
+```
+
+**Expected output**:
+```
+ok
+```
+
+**If corrupted**:
+```
+*** in database main ***
+On tree page 123 cell 45: ...
+```
+
+<Warning>
+If integrity check fails on your backup, do NOT delete your original database. Try creating a new backup.
+</Warning>
+
+### Compression
+
+Compress backups to save disk space:
+
+```bash
+gzip /path/to/backup.db
+```
+
+**Compression ratios**:
+- Text-heavy archives: 70-80% reduction
+- Typical archives: 50-60% reduction
+
+**Restore compressed backup**:
+```bash
+gunzip backup.db.gz
+```
+
+### Complete Backup Script
+
+```bash
+#!/bin/bash
+
+# Configuration
+DB_PATH="/path/to/ritual.db"
+BACKUP_DIR="/path/to/backups"
+DATE=$(date +%Y%m%d_%H%M%S)
+BACKUP_NAME="ritual_backup_${DATE}.db"
+
+# Create backup directory
+mkdir -p "$BACKUP_DIR"
+
+# Create backup
+echo "Creating backup..."
+sqlite3 "$DB_PATH" "VACUUM INTO '$BACKUP_DIR/$BACKUP_NAME'"
+
+if [ $? -eq 0 ]; then
+    echo "Backup created: $BACKUP_DIR/$BACKUP_NAME"
+    
+    # Verify integrity
+    echo "Verifying integrity..."
+    INTEGRITY=$(sqlite3 "$BACKUP_DIR/$BACKUP_NAME" 'PRAGMA integrity_check')
+    
+    if [ "$INTEGRITY" = "ok" ]; then
+        echo "Integrity check: OK"
+        
+        # Compress
+        echo "Compressing..."
+        gzip "$BACKUP_DIR/$BACKUP_NAME"
+        echo "Backup complete: $BACKUP_DIR/${BACKUP_NAME}.gz"
+    else
+        echo "Integrity check FAILED!"
+        echo "$INTEGRITY"
+        exit 1
+    fi
+else
+    echo "Backup failed!"
+    exit 1
+fi
+```
+
+**Make executable and run**:
+```bash
+chmod +x backup.sh
+./backup.sh
+```
+
+### Automated Backups with Cron
+
+**Daily backup at 3 AM**:
+```bash
+crontab -e
+```
+
+Add:
+```
+0 3 * * * /path/to/backup.sh >> /path/to/backup.log 2>&1
+```
+
+**Weekly backup (Sunday at 2 AM)**:
+```
+0 2 * * 0 /path/to/backup.sh
+```
+
+## MySQL Backups
+
+### Using mysqldump
+
+**Full database backup**:
+```bash
+mysqldump -u user -p ritual > ritual_backup.sql
+```
+
+**With compression**:
+```bash
+mysqldump -u user -p ritual | gzip > ritual_backup_$(date +%Y%m%d).sql.gz
+```
+
+**Specific boards only**:
+```bash
+mysqldump -u user -p ritual g g_images g_threads g_deleted > g_backup.sql
+```
+
+### Restore MySQL Backup
+
+```bash
+mysql -u user -p ritual < ritual_backup.sql
+```
+
+**From compressed backup**:
+```bash
+gunzip < ritual_backup.sql.gz | mysql -u user -p ritual
+```
+
+### MySQL Binary Backup
+
+**Faster for large databases**:
+
+<Steps>
+
+<Step title="Stop MySQL">
+  
+  ```bash
+  sudo systemctl stop mysql
+  ```
+  
+</Step>
+
+<Step title="Copy data directory">
+  
+  ```bash
+  sudo cp -r /var/lib/mysql/ritual /backup/mysql_ritual_$(date +%Y%m%d)
+  ```
+  
+</Step>
+
+<Step title="Start MySQL">
+  
+  ```bash
+  sudo systemctl start mysql
+  ```
+  
+</Step>
+
+</Steps>
+
+<Warning>
+Binary backups are not portable between MySQL versions or different systems. Use mysqldump for portability.
+</Warning>
+
+## Media Files Backup
+
+### Directory Structure
+
+Media files are organized by board and type:
+
+```
+media/
+├── g/
+│   ├── full_media/
+│   │   ├── 1234/
+│   │   │   └── 56/
+│   │   │       └── 1234567890123.jpg
+│   └── thumbnail/
+│       ├── 1234/
+│       │   └── 56/
+│       │       └── 1234567890123s.jpg
+└── biz/
+    └── full_media/
+        └── ...
+```
+
+### Using rsync
+
+**Initial backup**:
+```bash
+rsync -avh --progress media/ /backup/ritual_media/
+```
+
+**Incremental backup** (only changed files):
+```bash
+rsync -avh --progress --delete media/ /backup/ritual_media/
+```
+
+**To remote server**:
+```bash
+rsync -avh --progress media/ user@backup-server:/backups/ritual_media/
+```
+
+**Flags explained**:
+- `-a`: Archive mode (preserves permissions, timestamps)
+- `-v`: Verbose output
+- `-h`: Human-readable sizes
+- `--progress`: Show transfer progress
+- `--delete`: Remove files in destination that don't exist in source
+
+### Using tar
+
+**Create archive**:
+```bash
+tar -czf ritual_media_$(date +%Y%m%d).tar.gz media/
+```
+
+**Extract archive**:
+```bash
+tar -xzf ritual_media_20260303.tar.gz
+```
+
+**Incremental backup** (only changed files since last backup):
+```bash
+# First full backup
+tar -czf media_full.tar.gz -g media.snar media/
+
+# Later incremental backups
+tar -czf media_inc_$(date +%Y%m%d).tar.gz -g media.snar media/
+```
+
+### Deduplication with fclones
+
+Ritual avoids downloading duplicate media, but you can save space with hardlinks:
+
+```bash
+# Install fclones
+cargo install fclones
+
+# Find duplicates
+mkdir fcc
+fclones group ./media --cache ./fcc > dupes.txt
+
+# Replace duplicates with hardlinks (keeps oldest)
+fclones link --priority oldest < dupes.txt
+```
+
+<Tip>
+This can save significant disk space if you archive multiple boards with crossposted images.
+</Tip>
+
+## State Files Backup
+
+### Cache Directory
+
+State files in `cache/` directory:
+
+```
+cache/
+├── boards.json          # Board metadata from 4chan
+├── http_cache.json      # HTTP Last-Modified headers
+├── thread_cache.json    # Thread last_modified timestamps
+├── thread_meta.json     # Thread page positions and bump times
+└── thread_stats.json    # Reply/image counts per thread
+```
+
+### Backup State Files
+
+```bash
+tar -czf cache_backup_$(date +%Y%m%d).tar.gz cache/
+```
+
+<Accordion title="Are state files critical?">
+
+**Short answer**: No, but recommended.
+
+**What happens if lost**:
+- Ritual will re-process all threads on next run
+- HTTP caching starts fresh (more API requests)
+- Thread detection logic rebuilds
+
+**Benefits of backing up**:
+- Faster restart after restore
+- Preserves optimization state
+- Lower API load on restart
+
+**Recommendation**: Include in regular backups, but they're not as critical as database/media.
+
+</Accordion>
+
+## Backup Frequency Recommendations
+
+### High-Activity Archives
+
+Archiving popular boards (/g/, /v/, /pol/, /biz/):
+
+| Data Type | Frequency | Retention |
+|-----------|-----------|----------|
+| Database | Daily | 7 days |
+| Media | Daily | 7 days |
+| State | Weekly | 4 weeks |
+| Full backup | Weekly | 4-12 weeks |
+
+### Low-Activity Archives
+
+Archiving slow boards or specific threads:
+
+| Data Type | Frequency | Retention |
+|-----------|-----------|----------|
+| Database | Weekly | 4 weeks |
+| Media | Weekly | 4 weeks |
+| State | Monthly | 3 months |
+| Full backup | Monthly | 6-12 months |
+
+### Selective Backups
+
+**Text-only archives**:
+- Database: Daily
+- Media: Not needed (no media downloaded)
+
+**Media-heavy archives**:
+- Database: Weekly
+- Media: Daily (larger, changes more frequently)
+
+## Complete Backup Strategy
+
+<Steps>
+
+<Step title="Stop Ritual (optional)">
+  
+  For consistent backups, stop the archiver:
+  ```bash
+  # If running in screen
+  screen -r ritual
+  # Press Ctrl+C
+  ```
+  
+  <Tip>
+  Not strictly necessary for SQLite (VACUUM INTO handles locks), but ensures consistency.
+  </Tip>
+  
+</Step>
+
+<Step title="Backup database">
+  
+  **SQLite**:
+  ```bash
+  sqlite3 ritual.db "VACUUM INTO 'backup_$(date +%Y%m%d).db'"
+  ```
+  
+  **MySQL**:
+  ```bash
+  mysqldump -u user -p ritual | gzip > backup_$(date +%Y%m%d).sql.gz
+  ```
+  
+</Step>
+
+<Step title="Backup media files">
+  
+  ```bash
+  rsync -avh --progress media/ /backup/ritual_media/
+  ```
+  
+</Step>
+
+<Step title="Backup state files">
+  
+  ```bash
+  tar -czf cache_$(date +%Y%m%d).tar.gz cache/
+  ```
+  
+</Step>
+
+<Step title="Verify backups">
+  
+  **Database**:
+  ```bash
+  sqlite3 backup.db 'PRAGMA integrity_check'
+  ```
+  
+  **Files**:
+  ```bash
+  ls -lh /backup/ritual_media/
+  tar -tzf cache_*.tar.gz
+  ```
+  
+</Step>
+
+<Step title="Restart Ritual">
+  
+  ```bash
+  screen -S ritual
+  python3.12 main.py
+  # Ctrl+A, D to detach
+  ```
+  
+</Step>
+
+</Steps>
+
+## Restore from Backup
+
+### Full Restoration
+
+<Steps>
+
+<Step title="Stop Ritual">
+  
+  ```bash
+  # Kill the running process
+  screen -r ritual
+  # Ctrl+C
+  ```
+  
+</Step>
+
+<Step title="Restore database">
+  
+  **SQLite**:
+  ```bash
+  cp backup.db ritual.db
+  # Or from compressed:
+  gunzip -c backup.db.gz > ritual.db
+  ```
+  
+  **MySQL**:
+  ```bash
+  mysql -u user -p ritual < backup.sql
+  # Or from compressed:
+  gunzip < backup.sql.gz | mysql -u user -p ritual
+  ```
+  
+</Step>
+
+<Step title="Restore media files">
+  
+  ```bash
+  rsync -avh /backup/ritual_media/ media/
+  # Or from tar:
+  tar -xzf media_backup.tar.gz
+  ```
+  
+</Step>
+
+<Step title="Restore state files (optional)">
+  
+  ```bash
+  tar -xzf cache_backup.tar.gz
+  ```
+  
+</Step>
+
+<Step title="Verify permissions">
+  
+  ```bash
+  chmod 664 ritual.db
+  chmod -R 775 media/
+  chmod -R 775 cache/
+  ```
+  
+</Step>
+
+<Step title="Restart Ritual">
+  
+  ```bash
+  screen -S ritual
+  python3.12 main.py
+  ```
+  
+</Step>
+
+</Steps>
+
+### Partial Restoration
+
+**Restore specific board media**:
+```bash
+rsync -avh /backup/ritual_media/g/ media/g/
+```
+
+**Restore MySQL board tables**:
+```bash
+mysqldump -u user -p backup_ritual g g_images g_threads > g_only.sql
+mysql -u user -p ritual < g_only.sql
+```
+
+## Off-Site Backups
+
+### Cloud Storage
+
+**Rclone to cloud** (Google Drive, S3, etc.):
+
+```bash
+# Configure rclone
+rclone config
+
+# Backup to cloud
+rclone sync /backup/ritual remote:ritual_backups
+```
+
+### Remote Server
+
+**SSH backup script**:
+```bash
+#!/bin/bash
+
+BACKUP_NAME="ritual_$(date +%Y%m%d).tar.gz"
+
+# Create local backup
+tar -czf "$BACKUP_NAME" ritual.db media/ cache/
+
+# Copy to remote
+scp "$BACKUP_NAME" user@backup-server:/backups/
+
+# Remove local copy
+rm "$BACKUP_NAME"
+```
+
+## Monitoring Backup Health
+
+### Backup Size Tracking
+
+```bash
+#!/bin/bash
+
+echo "Database size:"
+du -sh ritual.db
+
+echo "\nMedia size per board:"
+du -sh media/*/
+
+echo "\nTotal media size:"
+du -sh media/
+
+echo "\nLatest backups:"
+ls -lh /backup/ | tail -5
+```
+
+### Automated Verification
+
+```bash
+#!/bin/bash
+
+LATEST_BACKUP=$(ls -t /backup/ritual_backup_*.db.gz | head -1)
+
+if [ -z "$LATEST_BACKUP" ]; then
+    echo "No backups found!"
+    exit 1
+fi
+
+echo "Verifying: $LATEST_BACKUP"
+gunzip -c "$LATEST_BACKUP" > /tmp/verify.db
+
+INTEGRITY=$(sqlite3 /tmp/verify.db 'PRAGMA integrity_check')
+
+if [ "$INTEGRITY" = "ok" ]; then
+    echo "Backup is healthy"
+    rm /tmp/verify.db
+    exit 0
+else
+    echo "Backup is CORRUPTED!"
+    echo "$INTEGRITY"
+    rm /tmp/verify.db
+    exit 1
+fi
+```
+
+<Tip>
+Run verification weekly to catch backup issues early:
+```bash
+crontab -e
+# Add:
+0 4 * * 1 /path/to/verify_backup.sh >> /path/to/verify.log 2>&1
+```
+</Tip>

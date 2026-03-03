@@ -1,0 +1,295 @@
+---
+title: "Running the Archiver"
+description: "Learn how to start, monitor, and manage the Ritual archiver"
+---
+
+## Starting the Archiver
+
+Ritual runs as a continuous process that loops through configured boards, fetching and archiving threads based on your filter rules.
+
+<Steps>
+  <Step title="Activate your virtual environment">
+    ```bash
+    source .venv/bin/activate
+    ```
+  </Step>
+
+  <Step title="Start the archiver">
+    ```bash
+    python3.12 main.py
+    ```
+  </Step>
+
+  <Step title="Monitor the output">
+    The archiver will begin processing boards and logging activity to the console.
+  </Step>
+</Steps>
+
+## Running with Screen for Persistence
+
+To keep the archiver running after closing your terminal session, use `screen`:
+
+<Steps>
+  <Step title="Install screen (if needed)">
+    ```bash
+    sudo apt install screen
+    ```
+  </Step>
+
+  <Step title="Create a new screen session">
+    ```bash
+    screen -S ritual
+    ```
+  </Step>
+
+  <Step title="Start the archiver">
+    ```bash
+    python3.12 main.py
+    ```
+  </Step>
+
+  <Step title="Detach from the screen">
+    Press `Ctrl-A`, then `d` to detach and leave the archiver running in the background.
+  </Step>
+
+  <Step title="Reattach to the screen">
+    ```bash
+    screen -r ritual
+    ```
+  </Step>
+</Steps>
+
+<Note>
+Screen sessions persist even if you close your SSH connection or terminal window.
+</Note>
+
+## What Happens During Execution
+
+When the archiver runs, it follows this process for each configured board:
+
+### Initialization
+
+On startup (from `main.py:23-40`):
+
+1. **Load boards.json** - Fetches or loads the list of boards with archive support
+2. **Initialize database** - Creates SQLite or MySQL connection using the Asagi schema
+3. **Load state** - Reads cached thread metadata from `cache/` directory
+4. **Start main loop** - Begins continuous archiving cycle
+
+```python
+# From main.py:78-96
+def main():
+    Init()
+    db = create_ritual_db()
+    loop = Loop()
+    state = State(loop)
+    fetcher = Fetcher(state)
+
+    critical_error_count = 0
+    while True:
+        try:
+            for board in configs.boards:
+                process_board(board, db, fetcher, loop, state)
+
+            fetcher.sleep()
+            state.save()
+
+            loop.increment_loop()
+            loop.log_board_durations()
+            loop.sleep()
+```
+
+### Per-Board Processing
+
+For each board (from `main.py:43-67`):
+
+1. **Fetch catalog** - Downloads `catalog.json` for the board
+2. **Update thread metadata** - Tracks page positions and last modified times
+3. **Filter threads** - Applies whitelist/blacklist rules from your configuration
+4. **Fetch posts** - Downloads thread JSON for modified or new threads
+5. **Save posts** - Writes post data to the database
+6. **Download media** - Fetches images/videos based on filter rules
+
+### Loop Completion
+
+After processing all boards:
+
+1. **Save state** - Persists thread cache and metadata to disk
+2. **Log statistics** - Reports processing time per board
+3. **Sleep** - Waits for `loop_cooldown_sec` (default 30s) before next iteration
+
+## Understanding the Logs
+
+Ritual provides detailed console output during execution:
+
+### Startup Logs
+
+```
+Loaded boards.json from cache/boards.json
+42 boards have archive support
+Loop #1 Started
+```
+
+### Per-Loop Logs
+
+```
+Duration for each board:
+    - g    2.3m
+    - ck   0.8m
+    - t    1.5m
+Total Duration: 4.6m
+Loop #1 Completed
+
+Doing loop cooldown sleep for 30s
+
+Loop #2 Started
+```
+
+<Info>
+The archiver logs loop numbers, board processing times, and total duration for each cycle.
+</Info>
+
+### What to Monitor
+
+- **Loop duration** - How long it takes to process all boards
+- **Board-specific times** - Identify slow or busy boards
+- **Error messages** - Watch for HTTP errors or database issues
+- **State saves** - Confirms thread cache is being persisted
+
+## Stopping the Archiver
+
+To gracefully stop the archiver:
+
+<Steps>
+  <Step title="Send interrupt signal">
+    Press `Ctrl+C` in the terminal where Ritual is running.
+  </Step>
+
+  <Step title="Wait for cleanup">
+    The archiver will catch the interrupt and save state before exiting:
+    ```
+    Received interrupt signal
+    Saving state...
+    Done
+    Saving database...
+    Done
+    Exited while loop, ending program.
+    ```
+  </Step>
+</Steps>
+
+<Warning>
+Always use `Ctrl+C` to stop the archiver. This ensures thread state and database changes are saved properly.
+</Warning>
+
+### Cleanup Process (from `main.py:69-75`)
+
+When stopped, the archiver:
+
+1. Saves thread cache to `cache/thread_cache.json`
+2. Saves HTTP cache to `cache/http_cache.json`
+3. Saves thread stats to `cache/thread_stats.json`
+4. Saves thread metadata to `cache/thread_meta.json`
+5. Closes database connection
+
+```python
+def save_on_error(state: State, db: RitualDb):
+    configs.logger.info('Saving state...')
+    state.save()
+    configs.logger.info('Done')
+    configs.logger.info('Saving database...')
+    db.save_and_close()
+    configs.logger.info('Done')
+```
+
+## Error Handling and Recovery
+
+Ritual includes built-in error recovery mechanisms:
+
+### Keyboard Interrupt (Ctrl+C)
+
+Caught by `main.py:98-101`:
+
+```python
+except KeyboardInterrupt:
+    configs.logger.info('Received interrupt signal')
+    save_on_error(state, db)
+    break
+```
+
+Result: Clean shutdown with state saved.
+
+### Critical Errors
+
+Caught by `main.py:103-115`:
+
+```python
+except Exception as e:
+    configs.logger.error(f'Critical error in main loop: {e}')
+    configs.logger.error(traceback.format_exc())
+    save_on_error(state, db)
+    critical_error_count += 1
+    n_critical_errors = 5
+    if critical_error_count >= n_critical_errors:
+        configs.logger.error(f'Critical error count reached {n_critical_errors}, exiting...')
+        break
+
+    sleep_for = critical_error_count * 60
+    configs.logger.info(f'Sleeping for {sleep_for}s, maybe the issue will resolve itself by then...')
+    sleep(sleep_for)
+```
+
+### Error Recovery Strategy
+
+1. **Automatic retry** - Sleeps for `critical_error_count * 60` seconds
+2. **Exponential backoff** - Each consecutive error increases wait time
+3. **Error limit** - Exits after 5 consecutive critical errors
+4. **State preservation** - Saves all state before sleeping or exiting
+
+<Note>
+The archiver saves state after every successful loop, so you can safely restart it at any time without losing progress.
+</Note>
+
+### Common Errors
+
+| Error Type | Cause | Solution |
+|-----------|-------|----------|
+| HTTP 429 | Rate limiting | Increase `request_cooldown_sec` in `configs.py` |
+| Connection timeout | Network issues | Wait for network recovery; archiver will retry |
+| Database lock | SQLite concurrency | Ensure only one instance is running |
+| Missing files | Configuration error | Verify `media_save_path` exists and is writable |
+
+## Restarting After Errors
+
+When you restart the archiver:
+
+- **Thread cache is respected** - Only modified threads are re-fetched
+- **Database state persists** - Already archived posts are skipped
+- **Media downloads resume** - Duplicate files are not re-downloaded
+
+<Info>
+Set `ignore_thread_cache = True` in `configs.py` to force re-checking all threads on the first loop after restart.
+</Info>
+
+## Performance Tuning
+
+### Cooldown Settings
+
+Adjust these in `configs.py` to control request rates:
+
+```python
+request_cooldown_sec = 1.2  # Time between API requests
+loop_cooldown_sec = 30.0    # Time between full board cycles
+video_cooldown_sec = 3.2    # Time between video downloads
+image_cooldown_sec = 2.2    # Time between image downloads
+```
+
+### Random Intervals
+
+```python
+add_random = True  # Add random sleep intervals to avoid patterns
+```
+
+<Warning>
+Respect 4chan's API rate limits (1 request per second). Setting cooldowns too low may result in temporary IP bans.
+</Warning>

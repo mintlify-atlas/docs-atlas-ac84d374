@@ -1,0 +1,408 @@
+---
+title: Advanced configuration
+description: Fine-tune rate limiting, caching, HTTP headers, and performance settings
+---
+
+Advanced configuration options let you optimize Ritual's behavior for your specific use case, from aggressive archiving to respectful background scraping.
+
+## Rate limiting
+
+Ritual includes built-in rate limiting to avoid overwhelming imageboard servers:
+
+```python
+request_cooldown_sec = 1.2   # Delay between API requests
+loop_cooldown_sec = 30.0     # Delay between full board loops
+video_cooldown_sec = 3.2     # Delay between video downloads
+image_cooldown_sec = 2.2     # Delay between image downloads
+add_random = False           # Add random jitter to cooldowns
+```
+
+### Request cooldown
+
+<ParamField path="request_cooldown_sec" type="float">
+  Delay between API requests (catalog.json, thread.json, archive.json).
+  
+  ```python
+  request_cooldown_sec = 1.2  # Default
+  request_cooldown_sec = 2.0  # More conservative
+  request_cooldown_sec = 0.5  # Aggressive (not recommended)
+  ```
+  
+  <Warning>
+  Setting this too low may result in rate limiting or IP bans. 4chan's API rules recommend 1 request per second.
+  </Warning>
+</ParamField>
+
+### Loop cooldown
+
+<ParamField path="loop_cooldown_sec" type="float">
+  Delay between full archiving loops (after processing all boards).
+  
+  ```python
+  loop_cooldown_sec = 30.0   # Default (30 seconds)
+  loop_cooldown_sec = 60.0   # Check boards every minute
+  loop_cooldown_sec = 300.0  # Check boards every 5 minutes
+  ```
+  
+  This controls how often Ritual checks for new threads and updates.
+</ParamField>
+
+### Media download cooldowns
+
+<ParamField path="video_cooldown_sec" type="float">
+  Delay between video/WebM file downloads.
+  
+  ```python
+  video_cooldown_sec = 3.2  # Default
+  ```
+  
+  Videos are typically larger and slower to transfer, so this cooldown is higher than images.
+</ParamField>
+
+<ParamField path="image_cooldown_sec" type="float">
+  Delay between image file downloads.
+  
+  ```python
+  image_cooldown_sec = 2.2  # Default
+  ```
+</ParamField>
+
+### Random jitter
+
+<ParamField path="add_random" type="boolean">
+  Add random variation to cooldown times to avoid predictable request patterns.
+  
+  ```python
+  add_random = False  # Fixed cooldowns (default)
+  add_random = True   # Random jitter (e.g., 1.2s becomes 1.0-1.4s)
+  ```
+  
+  <Tip>
+  Enabling random jitter makes Ritual's traffic pattern more human-like, which can help avoid rate limiting detection.
+  </Tip>
+</ParamField>
+
+## Caching behavior
+
+Control how Ritual uses cached data to avoid redundant work:
+
+```python
+ignore_thread_cache = True   # Ignore thread modification timestamps on restart
+ignore_http_cache = False    # Always refetch API data (for testing)
+```
+
+### Thread cache
+
+<ParamField path="ignore_thread_cache" type="boolean">
+  Controls whether to use cached thread modification timestamps.
+  
+  ```python
+  ignore_thread_cache = True   # Reprocess all threads on first loop (default)
+  ignore_thread_cache = False  # Use cached timestamps immediately
+  ```
+  
+  **When `True`**:
+  - First loop after restart processes all threads regardless of modification time
+  - Subsequent loops use normal caching
+  - Ensures you don't miss updates that occurred while Ritual was stopped
+  
+  **When `False`**:
+  - Immediately uses cached modification timestamps
+  - May miss updates if Ritual was offline for a while
+</ParamField>
+
+### HTTP cache
+
+<ParamField path="ignore_http_cache" type="boolean">
+  Forces Ritual to refetch all API data on every loop.
+  
+  ```python
+  ignore_http_cache = False  # Normal caching (default)
+  ignore_http_cache = True   # Always refetch (for testing)
+  ```
+  
+  <Warning>
+  Setting `ignore_http_cache = True` significantly increases API request volume. Use only for testing.
+  </Warning>
+</ParamField>
+
+## HTTP configuration
+
+Customize HTTP request behavior:
+
+### Custom headers
+
+```python
+headers = None  # Default (no custom headers)
+
+# Custom User-Agent
+headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+
+# Multiple headers
+headers = {
+    'User-Agent': 'MyArchiver/1.0',
+    'Accept-Language': 'en-US,en;q=0.9',
+}
+```
+
+<Note>
+4chan's API doesn't require custom headers, but they may be useful for other vichan-based imageboards.
+</Note>
+
+### MD5 verification
+
+<ParamField path="download_files_with_mismatched_md5" type="boolean">
+  Controls whether to download files when MD5 hash doesn't match the API.
+  
+  ```python
+  download_files_with_mismatched_md5 = False  # Reject mismatches (default)
+  download_files_with_mismatched_md5 = True   # Accept mismatches
+  ```
+  
+  **Why mismatches occur**:
+  - Cloudflare image recompression
+  - CDN modifications
+  - Corrupted downloads
+  
+  See [Troubleshooting - MD5 Mismatch Issues](/guides/troubleshooting#md5-mismatch-issues) for details.
+</ParamField>
+
+## Data processing
+
+### HTML unescaping
+
+<ParamField path="unescape_data_b4_db_write" type="boolean">
+  Controls whether to unescape HTML entities before writing to database.
+  
+  ```python
+  unescape_data_b4_db_write = True  # Store unescaped data (default)
+  unescape_data_b4_db_write = False # Store raw HTML entities
+  ```
+  
+  **When `True`** (recommended):
+  - `&gt;` becomes `>`
+  - `&quot;` becomes `"`
+  - Database contains human-readable text
+  
+  **When `False`**:
+  - Stores exactly what the API returns
+  - HTML entities remain escaped
+</ParamField>
+
+## Deletion detection
+
+Configure when threads are marked as deleted:
+
+```python
+not_deleted_if_bump_age_exceeds_n_min = 60  # Thread got recent attention
+not_deleted_if_page_n_reached = 5            # Thread reached page 5+
+not_deleted_if_n_replies = 30                # Thread has 30+ replies
+```
+
+A thread is marked as deleted if it's **not** in the catalog or archive and **all three** conditions are false:
+
+<ParamField path="not_deleted_if_bump_age_exceeds_n_min" type="integer">
+  Threads bumped within N minutes are not marked deleted (mods probably saw them).
+  
+  ```python
+  not_deleted_if_bump_age_exceeds_n_min = 60  # Default (1 hour)
+  ```
+</ParamField>
+
+<ParamField path="not_deleted_if_page_n_reached" type="integer">
+  Threads that reached page N or higher are not marked deleted (they were visible).
+  
+  ```python
+  not_deleted_if_page_n_reached = 5  # Default
+  ```
+</ParamField>
+
+<ParamField path="not_deleted_if_n_replies" type="integer">
+  Threads with N+ replies are not marked deleted (they were popular).
+  
+  ```python
+  not_deleted_if_n_replies = 30  # Default
+  ```
+</ParamField>
+
+<Note>
+These thresholds help distinguish between deleted threads and threads that naturally fell off the board.
+</Note>
+
+## Logging configuration
+
+```python
+logger_name = 'ritual'
+log_file = False  # or make_path("ritual.log") for file logging
+MB_5 = 5 * 1024 * 1024
+logger = setup_logger(
+    logger_name,
+    log_file=log_file,
+    stdout=True,              # Log to console
+    file_rotate_size=MB_5,    # Rotate after 5MB
+    max_files=3               # Keep 3 old log files
+)
+```
+
+### File logging
+
+Enable file logging for long-running archivers:
+
+```python
+log_file = make_path("ritual.log")  # ./ritual.log
+log_file = '/var/log/ritual.log'   # Custom path
+```
+
+Log files automatically rotate when they reach 5MB, keeping the 3 most recent files.
+
+### Console-only logging
+
+```python
+log_file = False  # Default (console only)
+```
+
+Logs are written to stdout, visible when running in a terminal or redirecting output.
+
+## Database performance
+
+<ParamField path="db_echo" type="boolean">
+  Enable SQL query logging for debugging.
+  
+  ```python
+  db_echo = False  # Default (no SQL logging)
+  db_echo = True   # Log all SQL queries
+  ```
+  
+  <Warning>
+  Setting `db_echo = True` generates massive log output. Use only for debugging specific issues.
+  </Warning>
+</ParamField>
+
+## Vichan compatibility
+
+Ritual supports vichan-based imageboards (not just 4chan) by configuring API URLs:
+
+### 4chan (default)
+
+```python
+url_catalog = "https://a.4cdn.org/{board}/catalog.json"
+url_thread = "https://a.4cdn.org/{board}/thread/{thread_id}.json"
+url_archive = "https://a.4cdn.org/{board}/archive.json"
+url_boards = "https://a.4cdn.org/boards.json"
+url_full_media = "https://i.4cdn.org/{board}/{image_id}{ext}"
+url_thumbnail = "https://i.4cdn.org/{board}/{image_id}s.jpg"
+```
+
+### Lainchan
+
+Example configuration for Lainchan:
+
+```python
+url_full_media = "https://lainchan.org/{board}/src/{image_id}{ext}"
+url_thumbnail = None  # Lainchan doesn't serve separate thumbnails
+url_catalog = "https://lainchan.org/{board}/catalog.json"
+url_thread = "https://lainchan.org/{board}/res/{thread_id}.json"
+url_archive = "https://lainchan.org/{board}/archive.json"
+url_boards = "https://lainchan.org/boards.json"
+```
+
+<Tip>
+Most vichan-based boards follow similar URL patterns. Check their source code or API documentation.
+</Tip>
+
+## Media storage
+
+<ParamField path="media_save_path" type="string">
+  Root directory for media file storage.
+  
+  ```python
+  media_save_path = make_path('media')  # ./media (default)
+  media_save_path = '/mnt/archives/media'  # Custom path
+  media_save_path = '/nas/ritual/media'  # Network storage
+  ```
+  
+  Ritual creates subdirectories for each board:
+  ```
+  media/
+    g/
+      image/
+      thumb/
+    gif/
+      image/
+      thumb/
+  ```
+</ParamField>
+
+<ParamField path="make_thumbnails" type="boolean">
+  Generate thumbnails locally instead of downloading them.
+  
+  ```python
+  make_thumbnails = False  # Download thumbnails from server (default)
+  make_thumbnails = True   # Generate thumbnails locally
+  ```
+  
+  See [Media downloading - Automatic thumbnail generation](/configuration/media-downloading#automatic-thumbnail-generation).
+</ParamField>
+
+## Performance optimization
+
+For high-volume archiving:
+
+```python
+# Aggressive settings (use with caution)
+request_cooldown_sec = 1.0      # Minimum recommended
+loop_cooldown_sec = 15.0        # Check frequently
+video_cooldown_sec = 2.0        # Faster video downloads
+image_cooldown_sec = 1.5        # Faster image downloads
+add_random = True               # Less predictable pattern
+
+# Conservative settings (respectful archiving)
+request_cooldown_sec = 2.0      # Extra breathing room
+loop_cooldown_sec = 60.0        # Check every minute
+video_cooldown_sec = 5.0        # Slow video downloads
+image_cooldown_sec = 3.0        # Slow image downloads
+add_random = True               # Human-like pattern
+```
+
+<Warning>
+Aggressive settings may trigger rate limiting or IP bans. Start conservative and adjust based on your needs.
+</Warning>
+
+## Environment-specific configurations
+
+You can use environment variables for sensitive or environment-specific settings:
+
+```python
+import os
+
+# Database credentials from environment
+db_mysql_password = os.environ.get('RITUAL_DB_PASSWORD', 'default')
+db_mysql_host = os.environ.get('RITUAL_DB_HOST', 'localhost')
+
+# Media storage path from environment
+media_save_path = os.environ.get('RITUAL_MEDIA_PATH', make_path('media'))
+
+# Rate limiting from environment
+request_cooldown_sec = float(os.environ.get('RITUAL_COOLDOWN', '1.2'))
+```
+
+Then set environment variables:
+
+```bash
+export RITUAL_DB_PASSWORD='secure_password'
+export RITUAL_MEDIA_PATH='/mnt/archives/media'
+export RITUAL_COOLDOWN='2.0'
+
+python3.12 main.py
+```
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Running the archiver" icon="play" href="/usage/running-archiver">
+    Start archiving with your custom configuration
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/guides/troubleshooting">
+    Solve common configuration issues
+  </Card>
+</CardGroup>

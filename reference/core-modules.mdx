@@ -1,0 +1,676 @@
+---
+title: 'Core Modules'
+description: 'Reference for all core classes and their methods'
+---
+
+This page documents all core modules in Ritual, their purposes, and key methods.
+
+## Init Class
+
+**Location:** main.py:23
+
+**Purpose:** Initializes the application environment and loads board metadata.
+
+### Initialization Steps
+
+<Steps>
+  <Step title="Test Dependencies">
+    If `make_thumbnails` is enabled, verifies FFmpeg and ImageMagick are installed.
+  </Step>
+  
+  <Step title="Load boards.json">
+    Loads board metadata from cache or fetches from 4chan API (`https://a.4cdn.org/boards.json`).
+  </Step>
+  
+  <Step title="Filter Boards">
+    Identifies which boards have archive support and stores in `configs.boards_with_archive`.
+  </Step>
+</Steps>
+
+---
+
+## Loop Class
+
+**Location:** loop.py:6
+
+**Purpose:** Manages loop iterations, timing statistics, and loop cooldowns.
+
+### Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `loop_i` | int | Current loop iteration (starts at 1) |
+| `start_time` | float | Timestamp when current board processing started |
+| `board_2_duration` | dict | Maps board → processing time in minutes |
+| `is_first_loop` | bool | Whether this is the first loop iteration |
+
+### Methods
+
+<AccordionGroup>
+  <Accordion title="set_start_time()" icon="clock">
+    **Location:** loop.py:18
+    
+    Records the start time for board processing.
+    
+    ```python
+    loop.set_start_time()
+    ```
+  </Accordion>
+  
+  <Accordion title="get_duration_minutes()" icon="stopwatch">
+    **Location:** loop.py:21
+    
+    Returns elapsed time in minutes since `set_start_time()` was called.
+    
+    ```python
+    duration = loop.get_duration_minutes()  # e.g., 3.25
+    ```
+  </Accordion>
+  
+  <Accordion title="set_board_duration_minutes()" icon="save">
+    **Location:** loop.py:24
+    
+    Stores the processing duration for a board.
+    
+    ```python
+    loop.set_board_duration_minutes('g')
+    ```
+  </Accordion>
+  
+  <Accordion title="log_board_durations()" icon="chart-bar">
+    **Location:** loop.py:27
+    
+    Logs a summary of processing times for all boards.
+    
+    ```
+    Duration for each board:
+        - g    3.2m
+        - pol  5.7m
+        - ck   1.1m
+    Total Duration: 10.0m
+    ```
+  </Accordion>
+  
+  <Accordion title="increment_loop()" icon="plus">
+    **Location:** loop.py:37
+    
+    Increments loop counter and logs completion.
+    
+    ```python
+    loop.increment_loop()
+    ```
+  </Accordion>
+  
+  <Accordion title="sleep()" icon="moon">
+    **Location:** loop.py:41
+    
+    Sleeps for `configs.loop_cooldown_sec` between loops.
+    
+    ```python
+    loop.sleep()
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Catalog Class
+
+**Location:** catalog.py:8
+
+**Purpose:** Fetches and processes catalog.json from 4chan API.
+
+### Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `board` | str | Board name (e.g., 'g', 'pol') |
+| `catalog` | list[dict] | Raw catalog pages from API |
+| `tid_2_thread` | dict[int, dict] | Maps thread_id → thread data |
+| `tid_2_page` | dict[int, int] | Maps thread_id → page number |
+| `tid_2_last_replies` | dict[int, list[dict]] | Maps thread_id → last N replies |
+
+### Methods
+
+<AccordionGroup>
+  <Accordion title="fetch_catalog()" icon="download">
+    **Location:** catalog.py:24
+    
+    Fetches catalog from 4chan API and processes it.
+    
+    ```python
+    catalog = Catalog(fetcher, 'g')
+    success = catalog.fetch_catalog()
+    ```
+    
+    **Returns:** `True` if successful, `False` if catalog is empty or request failed.
+    
+    **Actions:**
+    - Fetches `https://a.4cdn.org/{board}/catalog.json`
+    - Validates threads against schema
+    - Populates `tid_2_thread`, `tid_2_page`, `tid_2_last_replies`
+  </Accordion>
+  
+  <Accordion title="set_tid_2_thread()" icon="table">
+    **Location:** catalog.py:51
+    
+    Builds the `tid_2_thread` and `tid_2_page` mappings from raw catalog data.
+  </Accordion>
+  
+  <Accordion title="set_tid_2_last_replies()" icon="message">
+    **Location:** catalog.py:62
+    
+    Extracts `last_replies` data from catalog for incremental updates.
+  </Accordion>
+  
+  <Accordion title="validate_threads()" icon="check">
+    **Location:** catalog.py:19
+    
+    Validates all threads against the `ChanThread` schema using msgspec.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Archive Class
+
+**Location:** archive.py:5
+
+**Purpose:** Checks which threads are in 4chan's official archive.
+
+### Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `board` | str | Board name |
+| `has_archive` | bool | Whether board supports archiving |
+| `archived_tids` | set[int] | Set of archived thread IDs (lazy-loaded) |
+
+### Methods
+
+<AccordionGroup>
+  <Accordion title="board_supports_archive()" icon="box-archive">
+    **Location:** archive.py:12
+    
+    Checks if the board has archive support.
+    
+    ```python
+    if archive.board_supports_archive():
+        # board has /archive/ feature
+    ```
+    
+    **Returns:** `True` if board is in `configs.boards_with_archive`.
+  </Accordion>
+  
+  <Accordion title="is_archived()" icon="magnifying-glass">
+    **Location:** archive.py:15
+    
+    Checks if a thread is in the archive.
+    
+    ```python
+    if archive.is_archived(12345):
+        # thread is archived
+    ```
+    
+    **Lazy Loading:** Fetches archive.json on first call and caches results.
+    
+    **Returns:** `True` if thread is in archive, `False` otherwise.
+  </Accordion>
+  
+  <Accordion title="fetch_and_set_archive()" icon="download">
+    **Location:** archive.py:31
+    
+    Fetches archive.json and populates `archived_tids`.
+    
+    - Fetches `https://a.4cdn.org/{board}/archive.json`
+    - Called automatically by `is_archived()` on first use
+    - Only fetched once per loop (lazy loading)
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  The Archive class uses lazy loading to avoid unnecessary API calls. archive.json is only fetched when `is_archived()` is called for the first time in a loop.
+</Note>
+
+---
+
+## Filter Class
+
+**Location:** filter.py:23
+
+**Purpose:** Applies content filtering rules and manages media downloads.
+
+### Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `board` | str | Board name |
+| `tid_2_thread` | dict[int, dict] | Filtered threads to archive |
+| `tid_2_posts` | dict[int, list[dict]] | Thread posts for media filtering |
+| `full_pids` | set[int] | Post IDs to download full media |
+| `thumb_pids` | set[int] | Post IDs to download thumbnails |
+| `banned_hashes` | set[str] | Media hashes marked as banned |
+
+### Methods
+
+<AccordionGroup>
+  <Accordion title="filter_catalog()" icon="filter">
+    **Location:** filter.py:46
+    
+    Filters catalog threads based on configuration rules.
+    
+    ```python
+    filter = Filter(fetcher, db, 'g', state)
+    filter.filter_catalog(catalog)
+    # filter.tid_2_thread now contains only threads that pass filters
+    ```
+    
+    **Filters Applied:**
+    1. Minimum character requirements (`op_comment_min_chars`, `op_comment_min_chars_unique`)
+    2. Blacklist patterns (skip if matched)
+    3. Whitelist patterns (require if specified)
+    4. Last modified timestamp (skip unmodified threads)
+    
+    **Side Effects:**
+    - Updates `state.thread_cache` with thread timestamps
+    - Prunes old threads from state
+  </Accordion>
+  
+  <Accordion title="should_archive()" icon="question">
+    **Location:** filter.py:88
+    
+    Determines if a thread should be archived based on rules.
+    
+    ```python
+    if filter.should_archive(subject="Linux thread", comment="How do I install Arch?"):
+        # archive this thread
+    ```
+    
+    **Filter Priority:**
+    1. Character minimums (hard requirements)
+    2. Blacklist (excludes even if whitelisted)
+    3. Whitelist (includes only if matched)
+    4. Default (archive everything if no filters)
+  </Accordion>
+  
+  <Accordion title="download_media()" icon="download">
+    **Location:** filter.py:196
+    
+    Downloads media files based on configuration.
+    
+    ```python
+    filter.download_media(tid_2_posts, pid_2_post)
+    ```
+    
+    **Process:**
+    1. Calls `get_pids_for_download()` to determine what to download
+    2. Downloads full media for PIDs in `full_pids`
+    3. Downloads thumbnails for PIDs in `thumb_pids`
+    4. Generates thumbnails from full media if `make_thumbnails` enabled
+  </Accordion>
+  
+  <Accordion title="get_pids_for_download()" icon="list-check">
+    **Location:** filter.py:154
+    
+    Determines which posts need media downloads.
+    
+    **Checks:**
+    - Config patterns (`dl_fm_op`, `dl_fm_post`, `dl_fm_thread`, etc.)
+    - Banned media hashes
+    - File already exists locally
+    
+    **Populates:** `self.full_pids` and `self.thumb_pids`
+  </Accordion>
+  
+  <Accordion title="is_media_needed()" icon="image">
+    **Location:** filter.py:132
+    
+    Checks if media should be downloaded for a post.
+    
+    ```python
+    if filter.is_media_needed(post, dl_fm_op, MediaType.full_media):
+        # download the file
+    ```
+    
+    **Returns False if:**
+    - Config pattern doesn't match
+    - Media hash is banned
+    - File already exists
+  </Accordion>
+  
+  <Accordion title="download_post_file()" icon="file-arrow-down">
+    **Location:** filter.py:213
+    
+    Downloads a single media file.
+    
+    ```python
+    success = filter.download_post_file(post, MediaType.full_media)
+    ```
+    
+    **Features:**
+    - Validates file size and MD5 hash
+    - Applies image/video cooldowns
+    - Updates `{board}_images` table
+    - Generates thumbnail if `make_thumbnails` enabled
+  </Accordion>
+</AccordionGroup>
+
+<Tip>
+  The Filter class handles both content filtering (which threads to archive) and media filtering (which images to download). These are separate concerns but managed by the same class for convenience.
+</Tip>
+
+---
+
+## Posts Class
+
+**Location:** posts.py:16
+
+**Purpose:** Fetches thread JSON, detects deletions, and manages post data.
+
+### Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `board` | str | Board name |
+| `tid_2_thread` | dict[int, dict] | Filtered threads from catalog |
+| `tid_2_posts` | dict[int, list[dict]] | Maps thread_id → list of posts |
+| `pid_2_post` | dict[int, dict] | Maps post_id → post data |
+
+### Methods
+
+<AccordionGroup>
+  <Accordion title="fetch_posts()" icon="download">
+    **Location:** posts.py:33
+    
+    Fetches posts for all filtered threads.
+    
+    ```python
+    posts = Posts(db, fetcher, 'g', tid_2_thread, state, catalog)
+    posts.fetch_posts(archive)
+    ```
+    
+    **Process:**
+    1. Detects threads missing from catalog (deleted/archived/pruned)
+    2. Uses catalog incremental updates when possible
+    3. Fetches full thread JSON when needed
+    4. Detects deleted posts within threads
+    5. Marks threads/posts as deleted/archived in database
+    
+    **Optimizations:**
+    - Batch fetches existing PIDs (one query for all threads)
+    - Skips full fetches using `can_use_catalog_update()`
+    - Lazy-loads archive.json only when needed
+  </Accordion>
+  
+  <Accordion title="can_use_catalog_update()" icon="gauge-high">
+    **Location:** posts.py:212
+    
+    Checks if incremental update is possible.
+    
+    ```python
+    if posts.can_use_catalog_update(thread_data, thread_stats, last_replies):
+        # use catalog data instead of fetching thread JSON
+    ```
+    
+    **Requirements:**
+    - `last_replies` exists in catalog
+    - Thread stats cached from previous loop
+    - Reply count increased since last check
+    - New replies exactly match catalog's `last_replies`
+    
+    **Returns:** `True` if safe to use catalog data, `False` otherwise.
+  </Accordion>
+  
+  <Accordion title="process_catalog_update()" icon="arrows-rotate">
+    **Location:** posts.py:244
+    
+    Extracts new posts from catalog's `last_replies`.
+    
+    ```python
+    new_posts = posts.process_catalog_update(tid, last_replies, thread_stats)
+    ```
+    
+    - Filters replies newer than `most_recent_reply_no`
+    - Validates each reply against schema
+    - Logs number of new posts
+  </Accordion>
+  
+  <Accordion title="classify_missing_thread()" icon="magnifying-glass">
+    **Location:** posts.py:165
+    
+    Determines why a thread is missing from catalog.
+    
+    ```python
+    deletion_type = posts.classify_missing_thread(tid, archive)
+    # Returns: DeletionType.archived / .deleted / .pruned / .inconclusive
+    ```
+    
+    **Logic:**
+    - If in archive.json → **archived**
+    - If recent bump + early page + few replies → **deleted** (by moderator)
+    - Otherwise → **pruned** (naturally fell off board)
+  </Accordion>
+  
+  <Accordion title="save_posts()" icon="floppy-disk">
+    **Location:** posts.py:304
+    
+    Saves all fetched posts to database.
+    
+    ```python
+    posts.save_posts()
+    ```
+    
+    Calls `db.upsert_posts(board, pid_2_post.values())`.
+  </Accordion>
+  
+  <Accordion title="save_thread_stats()" icon="chart-line">
+    **Location:** posts.py:269
+    
+    Saves thread statistics to `{board}_threads` table.
+    
+    ```python
+    posts.save_thread_stats(tid=12345)
+    ```
+    
+    **Updates:**
+    - Reply and image counts
+    - Timestamps (OP, last post, bump, last_modified)
+    - Sticky and locked status
+  </Accordion>
+  
+  <Accordion title="validate_posts()" icon="check-circle">
+    **Location:** posts.py:28
+    
+    Validates posts against the `ChanPost` schema using msgspec.
+    
+    ```python
+    posts.validate_posts([{...}, {...}])
+    ```
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Fetcher Class
+
+**Location:** fetcher.py:8
+
+**Purpose:** Handles all HTTP requests with caching and cooldowns.
+
+### Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `session` | requests.Session | Persistent HTTP session |
+| `state` | State | State manager for HTTP caching |
+
+### Methods
+
+<AccordionGroup>
+  <Accordion title="fetch_json()" icon="download">
+    **Location:** fetcher.py:13
+    
+    Fetches JSON from a URL with HTTP caching support.
+    
+    ```python
+    data = fetcher.fetch_json(
+        url='https://a.4cdn.org/g/catalog.json',
+        headers={'User-Agent': '...'},
+        request_cooldown_sec=1.0,
+        add_random=True
+    )
+    ```
+    
+    **Features:**
+    - HTTP conditional requests (`If-Modified-Since` header)
+    - Returns empty dict on 304 Not Modified
+    - Caches `Last-Modified` header in state
+    - Applies cooldown after request
+    - Handles JSON decode errors gracefully
+    
+    **Returns:** Dict on success, empty dict on error/304.
+  </Accordion>
+  
+  <Accordion title="sleep()" icon="moon">
+    **Location:** fetcher.py:48
+    
+    Refreshes session between loops.
+    
+    ```python
+    fetcher.sleep()
+    ```
+    
+    Closes and recreates session if `loop_cooldown_sec >= 15` to prevent stale connections.
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  The Fetcher class implements HTTP caching to reduce bandwidth and respect 4chan's API. If the server returns 304 Not Modified, no data is re-downloaded.
+</Note>
+
+---
+
+## State Class
+
+**Location:** state.py:8
+
+**Purpose:** Manages persistent state across scraper runs.
+
+### Properties
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `thread_cache` | dict | `board → tid → last_modified` |
+| `http_cache` | dict | `url → Last-Modified header` |
+| `thread_stats` | dict | `board → tid → {replies, images, most_recent_reply_no}` |
+| `thread_meta` | dict | `board → tid → [page, bump_time]` |
+| `ignore_last_modified` | bool | Whether to ignore thread cache (first loop only) |
+
+### Methods
+
+<AccordionGroup>
+  <Accordion title="save()" icon="floppy-disk">
+    **Location:** state.py:38
+    
+    Saves all caches to JSON files.
+    
+    ```python
+    state.save()
+    ```
+    
+    **Files:**
+    - `cache/thread_cache.json`
+    - `cache/http_cache.json`
+    - `cache/thread_stats.json`
+    - `cache/thread_meta.json`
+  </Accordion>
+  
+  <Accordion title="read()" icon="folder-open">
+    **Location:** state.py:50
+    
+    Loads all caches from JSON files.
+    
+    ```python
+    state.read()
+    ```
+    
+    Called automatically on initialization.
+  </Accordion>
+  
+  <Accordion title="is_thread_modified_cache_update()" icon="clock">
+    **Location:** state.py:111
+    
+    Checks if thread was modified and updates cache.
+    
+    ```python
+    if state.is_thread_modified_cache_update('g', thread):
+        # thread is new or modified
+    ```
+    
+    **Returns:** `True` if thread should be downloaded.
+    
+    **Updates:** Thread cache with new `last_modified` value.
+  </Accordion>
+  
+  <Accordion title="update_thread_meta()" icon="info">
+    **Location:** state.py:192
+    
+    Updates thread page positions and bump times from catalog.
+    
+    ```python
+    state.update_thread_meta('g', tid_2_page, tid_2_thread)
+    ```
+    
+    Used for deletion detection logic.
+  </Accordion>
+  
+  <Accordion title="get_thread_stats() / set_thread_stats()" icon="chart-line">
+    **Locations:** state.py:142, state.py:147
+    
+    Gets/sets thread statistics for incremental updates.
+    
+    ```python
+    stats = state.get_thread_stats('g', 12345)
+    # Returns: {'replies': 150, 'images': 42, 'most_recent_reply_no': 67890}
+    
+    state.set_thread_stats('g', 12345, replies=151, images=43, most_recent_reply_no=67891)
+    ```
+  </Accordion>
+  
+  <Accordion title="get_http_last_modified() / set_http_last_modified()" icon="server">
+    **Locations:** state.py:176, state.py:179
+    
+    Manages HTTP Last-Modified headers for caching.
+    
+    ```python
+    last_modified = state.get_http_last_modified(url)
+    state.set_http_last_modified(url, 'Wed, 21 Oct 2015 07:28:00 GMT')
+    ```
+  </Accordion>
+  
+  <Accordion title="prune_old_threads()" icon="broom">
+    **Location:** state.py:93
+    
+    Prevents state from growing unbounded.
+    
+    ```python
+    state.prune_old_threads('g')
+    ```
+    
+    Keeps max 200 threads per board, removes oldest based on timestamp.
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+  State is automatically saved after each loop and on errors (KeyboardInterrupt, critical errors). Manual calls to `state.save()` are rarely needed.
+</Warning>
+
+---
+
+## RitualDb Class
+
+**Location:** db/ritual.py:14
+
+**Purpose:** Database abstraction layer for the Asagi schema.
+
+See [Database Schema](/reference/database-schema#ritualdb-class) for detailed documentation.

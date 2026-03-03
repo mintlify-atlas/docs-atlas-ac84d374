@@ -1,0 +1,126 @@
+---
+title: Configuration overview
+description: Learn how to configure Ritual for your archiving needs
+---
+
+Ritual uses a Python configuration file (`configs.py`) to control all aspects of the archiving process. This provides maximum flexibility while keeping configuration simple and version-controllable.
+
+## Configuration file
+
+Ritual expects a file named `configs.py` in the project root directory. You create this file by copying and renaming `rename_to_configs.py`:
+
+```bash
+cp rename_to_configs.py configs.py
+```
+
+<Tip>
+Keep `configs.py` out of version control if it contains sensitive information like database passwords. Add it to your `.gitignore`.
+</Tip>
+
+## Configuration structure
+
+The configuration file contains:
+
+<CardGroup cols={2}>
+  <Card title="Board filters" icon="filter" href="/configuration/board-filters">
+    Control which threads to archive using blacklists, whitelists, and content filters
+  </Card>
+  <Card title="Database settings" icon="database" href="/configuration/database">
+    Configure SQLite or MySQL database connections and schema
+  </Card>
+  <Card title="Media downloading" icon="images" href="/configuration/media-downloading">
+    Fine-tune what media files to download (text, thumbnails, full media)
+  </Card>
+  <Card title="Advanced settings" icon="sliders" href="/configuration/advanced">
+    Rate limiting, caching, HTTP headers, and performance tuning
+  </Card>
+</CardGroup>
+
+## The boards dictionary
+
+The heart of Ritual's configuration is the `boards` dictionary, which maps board names to their specific archiving rules:
+
+```python
+boards = {
+    'g': {
+        'blacklist': '.*(local models).*',
+        'whitelist': '.*(home server|linux).*',
+        'thread_text': True,
+        'dl_fm_thread': '.*(wireguard).*',
+        'dl_th_op': True,
+    },
+    'gif': {
+        # Text-only archiving with default settings
+    },
+}
+```
+
+Each board can have completely different archiving rules, allowing you to:
+- Archive specific topics from one board
+- Get all content from another board
+- Download only text from a third board
+
+## Configuration rules
+
+Ritual applies configuration rules in a specific order to determine what to archive:
+
+<Steps>
+  <Step title="Content filters apply first">
+    `op_comment_min_chars` and `op_comment_min_chars_unique` filter out low-quality threads before other rules are evaluated.
+  </Step>
+  
+  <Step title="Blacklists take precedence">
+    If a thread matches both blacklist and whitelist patterns, it will **not** be archived. Blacklists always win.
+  </Step>
+  
+  <Step title="List behavior">
+    - **Only blacklist**: Skip blacklisted threads, archive everything else
+    - **Only whitelist**: Archive whitelisted threads, skip everything else
+    - **Both lists**: Archive threads that match whitelist AND don't match blacklist
+    - **No lists**: Archive everything (subject to content filters)
+  </Step>
+  
+  <Step title="Media filters apply to archived threads">
+    Once a thread is marked for archiving, `dl_fm_*` and `dl_th_*` configs determine which media files to download.
+  </Step>
+</Steps>
+
+## Default values
+
+If you omit a configuration option, Ritual uses these defaults:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `thread_text` | `True` | Archive thread text |
+| `dl_fm_op` | `None` | Don't download OP full media |
+| `dl_fm_post` | `None` | Don't download reply full media |
+| `dl_fm_thread` | `None` | No thread-level full media filter |
+| `dl_th_op` | `None` | Don't download OP thumbnails |
+| `dl_th_post` | `None` | Don't download reply thumbnails |
+| `dl_th_thread` | `None` | No thread-level thumbnail filter |
+| `blacklist` | `None` | No blacklist filtering |
+| `whitelist` | `None` | No whitelist filtering |
+
+<Warning>
+If `thread_text` is `False` and no media download options are configured, the board will effectively be ignored.
+</Warning>
+
+## Configuration validation
+
+Ritual validates your configuration when it starts. Common validation errors:
+
+- **Invalid regex pattern**: Syntax errors in blacklist/whitelist patterns
+- **Missing boards**: Boards configured but not found on the imageboard
+- **Invalid db_type**: Must be `'sqlite'` or `'mysql'`
+- **Missing database credentials**: Required fields for MySQL connections
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Board filters" icon="filter" href="/configuration/board-filters">
+    Learn about blacklists, whitelists, and content filtering
+  </Card>
+  <Card title="Media downloading" icon="images" href="/configuration/media-downloading">
+    Configure selective media downloading strategies
+  </Card>
+</CardGroup>

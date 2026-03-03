@@ -1,0 +1,268 @@
+---
+title: 'System Architecture'
+description: 'Understanding how Ritual works internally'
+---
+
+Ritual is designed to be simple and easy to understand. It runs synchronously in a step-by-step manner, making the codebase straightforward to read and maintain.
+
+## Core Principles
+
+Ritual follows these key design principles:
+
+- **Synchronous execution** - No complex async code, everything runs step-by-step
+- **Single-threaded** - One board processed at a time in a simple loop
+- **Minimal dependencies** - Lightweight Python with only essential packages
+- **Asagi schema** - Uses the established Asagi database schema for compatibility
+
+## How Ritual Works
+
+<Steps>
+  <Step title="Initialization">
+    The `Init` class (main.py:23) sets up the environment:
+    - Tests dependencies (if thumbnail generation is enabled)
+    - Loads or fetches boards.json from 4chan API
+    - Identifies boards with archive support
+  </Step>
+
+  <Step title="Main Loop">
+    The main loop (main.py:86) continuously processes boards:
+    - Iterates through each configured board
+    - Processes board data using `process_board()`
+    - Saves state after each complete cycle
+    - Sleeps between loops using `loop_cooldown_sec`
+  </Step>
+
+  <Step title="Board Processing">
+    For each board, `process_board()` executes this workflow:
+    
+    1. **Fetch Catalog** - Download catalog.json from 4chan API
+    2. **Filter Threads** - Apply whitelist/blacklist rules
+    3. **Fetch Posts** - Download thread JSON for modified threads
+    4. **Save Posts** - Write post data to database
+    5. **Download Media** - Fetch images/videos based on rules
+  </Step>
+</Steps>
+
+## Data Flow
+
+Here's how data flows through Ritual:
+
+```
+4chan API
+    ↓
+┌─────────────────────────────────────────────────┐
+│ 1. Catalog (catalog.py)                         │
+│    - Fetches catalog.json                       │
+│    - Maps thread_id → thread data               │
+│    - Maps thread_id → page number               │
+└─────────────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────────────┐
+│ 2. Archive (archive.py)                         │
+│    - Lazy-fetches archive.json (once per loop)  │
+│    - Checks if threads are archived             │
+└─────────────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────────────┐
+│ 3. Filter (filter.py)                           │
+│    - Applies whitelist/blacklist patterns       │
+│    - Checks minimum character requirements      │
+│    - Filters based on last_modified timestamps  │
+└─────────────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────────────┐
+│ 4. Posts (posts.py)                             │
+│    - Fetches thread JSON for modified threads   │
+│    - Detects deleted/archived threads           │
+│    - Uses catalog updates when possible         │
+│    - Validates posts against schema             │
+└─────────────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────────────┐
+│ 5. Database (db/ritual.py)                      │
+│    - Upserts posts to board tables              │
+│    - Updates thread stats                       │
+│    - Marks deleted/archived threads             │
+└─────────────────────────────────────────────────┘
+    ↓
+┌─────────────────────────────────────────────────┐
+│ 6. Media Download (filter.py)                   │
+│    - Determines which media to download         │
+│    - Downloads full media and/or thumbnails     │
+│    - Generates thumbnails if enabled            │
+└─────────────────────────────────────────────────┘
+    ↓
+Local Storage
+```
+
+## Key Classes
+
+Ritual's architecture is organized around these core classes:
+
+<CardGroup cols={2}>
+  <Card title="Init" icon="play" href="/reference/core-modules#init-class">
+    Initializes the application and loads board metadata
+  </Card>
+  
+  <Card title="Loop" icon="arrows-rotate" href="/reference/core-modules#loop-class">
+    Manages loop iterations, timing, and statistics
+  </Card>
+  
+  <Card title="Catalog" icon="table-list" href="/reference/core-modules#catalog-class">
+    Fetches and processes catalog.json from 4chan
+  </Card>
+  
+  <Card title="Archive" icon="box-archive" href="/reference/core-modules#archive-class">
+    Checks which threads are in 4chan's archive
+  </Card>
+  
+  <Card title="Filter" icon="filter" href="/reference/core-modules#filter-class">
+    Applies content filtering and media download rules
+  </Card>
+  
+  <Card title="Posts" icon="message" href="/reference/core-modules#posts-class">
+    Fetches thread JSON and manages post data
+  </Card>
+  
+  <Card title="Fetcher" icon="cloud-arrow-down" href="/reference/core-modules#fetcher-class">
+    Handles all HTTP requests with caching
+  </Card>
+  
+  <Card title="State" icon="floppy-disk" href="/reference/core-modules#state-class">
+    Manages persistent state across runs
+  </Card>
+  
+  <Card title="RitualDb" icon="database" href="/reference/database-schema#ritualdb-class">
+    Database abstraction layer for Asagi schema
+  </Card>
+</CardGroup>
+
+## Process Flow
+
+The `process_board()` function (main.py:43) orchestrates the entire archival workflow:
+
+<Accordion title="View process_board() workflow">
+```python
+def process_board(board: str, db: RitualDb, fetcher: Fetcher, loop: Loop, state: State):
+    # 1. Start timing
+    loop.set_start_time()
+
+    # 2. Fetch catalog
+    catalog = Catalog(fetcher, board)
+    if not catalog.fetch_catalog():
+        return
+
+    # 3. Update state with thread metadata (page, bump time)
+    state.update_thread_meta(board, catalog.tid_2_page, catalog.tid_2_thread)
+
+    # 4. Prepare archive checker (lazy-loads archive.json)
+    archive = Archive(fetcher, board)
+
+    # 5. Filter catalog based on rules
+    filter = Filter(fetcher, db, board, state)
+    filter.filter_catalog(catalog)
+
+    # 6. Fetch and process posts
+    posts = Posts(db, fetcher, board, filter.tid_2_thread, state, catalog)
+    posts.fetch_posts(archive)
+
+    # 7. Save posts to database (if thread_text enabled)
+    if configs.boards[board].get('thread_text') != False:
+        posts.save_posts()
+
+    # 8. Download media files
+    filter.download_media(posts.tid_2_posts, posts.pid_2_post)
+
+    # 9. Record timing statistics
+    loop.set_board_duration_minutes(board)
+```
+</Accordion>
+
+## State Management
+
+Ritual maintains several caches to optimize performance:
+
+<AccordionGroup>
+  <Accordion title="thread_cache" icon="clock">
+    Maps `board → thread_id → last_modified` timestamp
+    
+    - Used to skip unmodified threads
+    - Pruned to 200 threads per board
+    - Can be ignored on first loop with `ignore_thread_cache`
+  </Accordion>
+  
+  <Accordion title="http_cache" icon="server">
+    Maps `URL → Last-Modified` header
+    
+    - Enables HTTP 304 responses (Not Modified)
+    - Reduces bandwidth and API load
+    - Limited to 500 entries
+  </Accordion>
+  
+  <Accordion title="thread_stats" icon="chart-line">
+    Maps `board → thread_id → {replies, images, most_recent_reply_no}`
+    
+    - Enables catalog-based incremental updates
+    - Avoids full thread fetches when only new replies exist
+    - Pruned to 200 threads per board
+  </Accordion>
+  
+  <Accordion title="thread_meta" icon="info">
+    Maps `board → thread_id → [page, bump_time]`
+    
+    - Used for deletion detection logic
+    - Helps distinguish deleted vs pruned vs archived threads
+    - Pruned to 200 threads per board
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  All state caches are persisted to JSON files in the `cache/` directory and loaded on startup.
+</Note>
+
+## Error Handling
+
+Ritual includes robust error handling:
+
+- **KeyboardInterrupt** - Gracefully saves state and database before exiting
+- **Critical errors** - Saves state, logs error, and retries with exponential backoff
+- **Error limit** - Exits after 5 consecutive critical errors
+- **HTTP errors** - Logged but don't crash the application
+
+## Catalog-Based Incremental Updates
+
+Ritual optimizes performance by avoiding unnecessary full thread fetches:
+
+<Steps>
+  <Step title="Check Conditions">
+    The `can_use_catalog_update()` method (posts.py:212) verifies:
+    - `last_replies` data exists in catalog
+    - Thread stats cached from previous loop
+    - Reply count increased
+    - New reply count matches catalog data
+  </Step>
+  
+  <Step title="Extract New Posts">
+    If conditions met, `process_catalog_update()` (posts.py:244) extracts only new posts from catalog's `last_replies` array
+  </Step>
+  
+  <Step title="Skip Full Fetch">
+    The full thread JSON fetch is skipped, saving bandwidth and time
+  </Step>
+</Steps>
+
+<Tip>
+  This optimization is most effective for active boards with many threads receiving regular replies.
+</Tip>
+
+## Deletion Detection
+
+Ritual distinguishes between three types of thread removal:
+
+| Type | Detection Logic | Database Action |
+|------|----------------|----------------|
+| **Archived** | Thread in archive.json | Mark as locked |
+| **Deleted** | Recent bump + early page + few replies | Mark as deleted |
+| **Pruned** | Old thread that fell off board | Mark timestamp_expired |
+
+See `classify_missing_thread()` in posts.py:165 for full logic.

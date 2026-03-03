@@ -1,0 +1,354 @@
+---
+title: Media downloading
+description: Configure selective media downloading for threads and posts
+---
+
+Ritual gives you fine-grained control over which media files to download. You can choose to archive only text, only thumbnails, or full media files, and filter downloads based on thread content.
+
+## Media types
+
+Ritual supports three types of content:
+
+<CardGroup cols={3}>
+  <Card title="Thread text" icon="align-left">
+    Post text, metadata, and thread structure stored in the database
+  </Card>
+  <Card title="Thumbnails" icon="image">
+    Small preview images (typically JPEG, ~50-200KB)
+  </Card>
+  <Card title="Full media" icon="file">
+    Original uploaded files (images, videos, WebMs)
+  </Card>
+</CardGroup>
+
+## Text archiving
+
+Control whether to save thread text to the database:
+
+```python
+boards = {
+    'g': {
+        'thread_text': True,  # Archive text (default)
+    },
+    'gif': {
+        'thread_text': False,  # Skip text archiving
+    },
+}
+```
+
+<Warning>
+If `thread_text` is `False`, posts are not saved to the database. Media downloads still work, but you lose all post metadata.
+</Warning>
+
+## Media download levels
+
+Media downloads can be controlled at three levels of specificity:
+
+### Level 1: OP-only
+
+Download media only from the opening post:
+
+```python
+'t': {
+    'dl_fm_op': True,  # Download OP full media
+    'dl_th_op': True,  # Download OP thumbnails
+},
+```
+
+**Use case**: Archive OP images for identification while ignoring reply spam
+
+### Level 2: Per-post filtering
+
+Download media from individual posts based on content:
+
+```python
+'g': {
+    'dl_fm_post': '.*(screenshot|desktop).*',  # Posts mentioning "screenshot" or "desktop"
+    'dl_th_post': True,  # All post thumbnails
+},
+```
+
+**Use case**: Selective archiving based on post text (e.g., only posts with specific keywords)
+
+### Level 3: Thread-level filtering
+
+Download all media from threads matching a pattern:
+
+```python
+'g': {
+    'dl_fm_thread': '.*(wireguard).*',  # All media if OP mentions "wireguard"
+    'dl_th_thread': '.*(setup|build).*',  # All thumbnails if OP mentions "setup" or "build"
+},
+```
+
+**Use case**: Archive all media from specific types of threads
+
+## Configuration options
+
+### Full media options
+
+<ParamField path="dl_fm_op" type="boolean | string">
+  Download full media from OP posts.
+  
+  - `True`: Download all OP media
+  - `False` or `None`: Don't download OP media
+  - Regex string: Download OP media if OP matches pattern
+  
+  ```python
+  'dl_fm_op': True  # All OP media
+  'dl_fm_op': '.*(wireguard).*'  # OP media if OP mentions "wireguard"
+  ```
+</ParamField>
+
+<ParamField path="dl_fm_post" type="boolean | string">
+  Download full media from reply posts.
+  
+  - `True`: Download all reply media
+  - `False` or `None`: Don't download reply media
+  - Regex string: Download reply media if the individual post matches pattern
+  
+  ```python
+  'dl_fm_post': True  # All reply media
+  'dl_fm_post': '.*(screenshot).*'  # Reply media if post mentions "screenshot"
+  ```
+</ParamField>
+
+<ParamField path="dl_fm_thread" type="boolean | string">
+  Download full media from entire threads.
+  
+  - `True`: Download all thread media (overrides OP/post settings)
+  - `False` or `None`: No thread-level filtering
+  - Regex string: Download all thread media if OP matches pattern
+  
+  ```python
+  'dl_fm_thread': '.*(wireguard).*'  # All media if OP mentions "wireguard"
+  ```
+  
+  <Note>
+  Thread-level filters check the **OP post only**, but download media from **all posts** in the thread if matched.
+  </Note>
+</ParamField>
+
+### Thumbnail options
+
+Thumbnail options work identically to full media options:
+
+<ParamField path="dl_th_op" type="boolean | string">
+  Download thumbnails from OP posts.
+</ParamField>
+
+<ParamField path="dl_th_post" type="boolean | string">
+  Download thumbnails from reply posts.
+</ParamField>
+
+<ParamField path="dl_th_thread" type="boolean | string">
+  Download thumbnails from entire threads.
+</ParamField>
+
+## Filter evaluation order
+
+Media download filters are evaluated in this order:
+
+<Steps>
+  <Step title="Thread-level filters checked first">
+    If `dl_fm_thread` or `dl_th_thread` matches, **all media** in the thread is downloaded, regardless of OP/post settings.
+  </Step>
+  
+  <Step title="OP vs post filters">
+    For each post, Ritual checks if it's the OP:
+    - **OP post**: Uses `dl_fm_op` / `dl_th_op`
+    - **Reply post**: Uses `dl_fm_post` / `dl_th_post`
+  </Step>
+  
+  <Step title="Pattern matching">
+    If the filter is a regex string, it's checked against the post's subject and comment.
+  </Step>
+  
+  <Step title="File existence check">
+    If the file already exists on disk, download is skipped (duplicate detection).
+  </Step>
+</Steps>
+
+## Real-world examples
+
+### Example 1: Text-only archiving
+
+```python
+'gif': {
+    # Default: thread_text = True, all media downloads disabled
+}
+```
+
+Archives thread text from `/gif/` without any media files. Minimal disk usage.
+
+### Example 2: Thumbnails-only archiving
+
+```python
+'ck': {
+    'whitelist': '.*Coffee Time General.*',
+    'thread_text': True,
+    'dl_th_post': True,  # All thumbnails
+    'dl_fm_post': False,  # No full media
+},
+```
+
+Archives "Coffee Time General" threads with text and thumbnails but no full-size images.
+
+### Example 3: Selective full media
+
+```python
+'g': {
+    'whitelist': '.*(home server|linux).*',
+    'thread_text': True,
+    'dl_fm_thread': '.*(wireguard).*',  # Full media only from wireguard threads
+    'dl_fm_post': '.*(screenshot).*',  # Full media from posts with screenshots
+    'dl_th_op': True,  # OP thumbnails for thread identification
+},
+```
+
+Complex filtering:
+- Archives threads about "home server" or "linux"
+- Downloads all media from threads mentioning "wireguard"
+- Downloads media from individual posts mentioning "screenshot"
+- Always downloads OP thumbnails
+
+### Example 4: OP media only
+
+```python
+'t': {
+    'thread_text': True,
+    'dl_fm_op': True,  # OP full media
+    'dl_th_op': True,  # OP thumbnails
+    # Reply media not configured - will not be downloaded
+},
+```
+
+Archives threads from `/t/ (torrents)` with OP media only, ignoring reply attachments.
+
+### Example 5: Everything
+
+```python
+'wg': {
+    'thread_text': True,
+    'dl_fm_post': True,  # All full media
+    'dl_th_post': True,  # All thumbnails
+},
+```
+
+Complete archiving of `/wg/ (wallpapers)` including all text and media.
+
+## Automatic thumbnail generation
+
+Instead of downloading thumbnails from the server, you can generate them locally:
+
+```python
+make_thumbnails = True
+```
+
+When enabled:
+- Thumbnails are **not** downloaded from the imageboard
+- After downloading full media, Ritual generates a thumbnail locally
+- Saves bandwidth but requires image processing dependencies
+
+<Warning>
+Thumbnail generation requires additional dependencies. Run:
+
+```bash
+uv pip install pillow
+```
+</Warning>
+
+## Duplicate detection
+
+Ritual automatically skips downloading duplicate media files:
+
+<Steps>
+  <Step title="MD5 hash checking">
+    Each media file has an MD5 hash from the API. Ritual tracks downloaded hashes in the `{board}_images` table.
+  </Step>
+  
+  <Step title="File existence check">
+    Before downloading, Ritual checks if a file with the same MD5 already exists on disk.
+  </Step>
+  
+  <Step title="Skip duplicate downloads">
+    If the file exists, the download is skipped, saving bandwidth and time.
+  </Step>
+</Steps>
+
+### MD5 mismatch handling
+
+Sometimes the downloaded file's MD5 doesn't match the API (e.g., Cloudflare recompression):
+
+```python
+download_files_with_mismatched_md5 = False  # Reject mismatches (default)
+download_files_with_mismatched_md5 = True   # Accept mismatches
+```
+
+<Tip>
+See [Troubleshooting - MD5 Mismatch Issues](/guides/troubleshooting#md5-mismatch-issues) for more details.
+</Tip>
+
+## Storage optimization
+
+After archiving, you can deduplicate media files using hardlinks:
+
+```bash
+# Install fclones
+cargo install fclones
+
+# Find duplicates
+mkdir fcc
+fclones group ./media --cache ./fcc > dupes.txt
+
+# Replace duplicates with hardlinks
+fclones link --priority oldest < dupes.txt
+```
+
+This can save significant disk space if you archive multiple boards with shared media.
+
+## Media file paths
+
+Media files are saved to:
+
+```
+media/
+  {board}/
+    image/          # Full media files
+    thumb/          # Thumbnails
+```
+
+Example:
+```
+media/g/image/1234567890123.jpg
+media/g/thumb/1234567890123s.jpg
+```
+
+The `media_save_path` configuration controls the root directory:
+
+```python
+media_save_path = make_path('media')  # ./media
+media_save_path = '/mnt/archives/media'  # Custom path
+```
+
+## Rate limiting
+
+To avoid overwhelming the imageboard server, configure download cooldowns:
+
+```python
+video_cooldown_sec = 3.2   # Delay between video downloads
+image_cooldown_sec = 2.2   # Delay between image downloads
+```
+
+See [Advanced configuration](/configuration/advanced#rate-limiting) for details.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Advanced settings" icon="sliders" href="/configuration/advanced">
+    Configure rate limiting, caching, and HTTP options
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/guides/troubleshooting">
+    Solve common media download issues
+  </Card>
+</CardGroup>

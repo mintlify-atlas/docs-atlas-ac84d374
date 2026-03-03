@@ -1,0 +1,270 @@
+---
+title: Database configuration
+description: Configure SQLite or MySQL database for storing archived content
+---
+
+Ritual uses the Asagi database schema to store archived threads, posts, and media metadata. You can choose between SQLite (simple, file-based) or MySQL (scalable, multi-user) as your database backend.
+
+## Database type
+
+Choose your database type with the `db_type` configuration:
+
+<Tabs>
+  <Tab title="SQLite">
+    ```python
+    db_type = 'sqlite'
+    db_sqlite_path = make_path('ritual.db')
+    db_echo = False
+    ```
+    
+    **Best for:**
+    - Single-user archiving
+    - Simple deployments
+    - Small to medium archives (< 10GB)
+    - No external database server needed
+    
+    <Tip>
+    SQLite is the recommended choice for getting started. You can always migrate to MySQL later if needed.
+    </Tip>
+  </Tab>
+  
+  <Tab title="MySQL">
+    ```python
+    db_type = 'mysql'
+    db_mysql_host = 'localhost'
+    db_mysql_user = 'ritual_user'
+    db_mysql_password = 'secure_password'
+    db_mysql_database = 'ritual'
+    db_mysql_port = 3306
+    db_echo = False
+    ```
+    
+    **Best for:**
+    - Large-scale archiving (> 10GB)
+    - Multiple concurrent archivers
+    - Remote database access
+    - Advanced querying and analytics
+    
+    <Warning>
+    Remember to uncomment the `mysql-connector-python` dependency in `requirements.txt`:
+    ```txt
+    mysql-connector-python==9.5.0
+    ```
+    </Warning>
+  </Tab>
+</Tabs>
+
+## Configuration options
+
+### SQLite options
+
+<ParamField path="db_type" type="string" required>
+  Must be set to `'sqlite'`
+</ParamField>
+
+<ParamField path="db_sqlite_path" type="string" required>
+  Path to the SQLite database file. Use `make_path('ritual.db')` for the default location.
+  
+  ```python
+  db_sqlite_path = make_path('ritual.db')  # ./ritual.db
+  db_sqlite_path = '/var/archives/ritual.db'  # Absolute path
+  ```
+</ParamField>
+
+<ParamField path="db_echo" type="boolean">
+  Enable SQL query logging for debugging. Default: `False`
+  
+  <Warning>
+  Setting `db_echo = True` generates significant log output. Use only for debugging.
+  </Warning>
+</ParamField>
+
+### MySQL options
+
+<ParamField path="db_type" type="string" required>
+  Must be set to `'mysql'`
+</ParamField>
+
+<ParamField path="db_mysql_host" type="string" required>
+  MySQL server hostname or IP address.
+  
+  ```python
+  db_mysql_host = 'localhost'  # Local server
+  db_mysql_host = '192.168.1.100'  # Remote server
+  ```
+</ParamField>
+
+<ParamField path="db_mysql_user" type="string" required>
+  MySQL username for authentication.
+</ParamField>
+
+<ParamField path="db_mysql_password" type="string" required>
+  MySQL password for authentication.
+  
+  <Tip>
+  Store sensitive passwords in environment variables:
+  
+  ```python
+  import os
+  db_mysql_password = os.environ.get('RITUAL_DB_PASSWORD', 'default')
+  ```
+  </Tip>
+</ParamField>
+
+<ParamField path="db_mysql_database" type="string" required>
+  Name of the MySQL database to use. Ritual will create tables in this database.
+</ParamField>
+
+<ParamField path="db_mysql_port" type="integer">
+  MySQL server port. Default: `3306`
+</ParamField>
+
+## Asagi schema
+
+Ritual uses the [Asagi database schema](https://github.com/sky-cake/asagi-tables), which is the standard for imageboard archiving. The schema is created automatically when you run Ritual for the first time.
+
+### Tables created
+
+For each board you configure, Ritual creates:
+
+**Base table** (`{board}`)
+- Stores all posts (OPs and replies)
+- Includes post text, timestamps, media references
+- Example: `g` table for `/g/` board
+
+**Side tables**
+- `{board}_threads`: Thread-level statistics and metadata
+- `{board}_images`: Media file metadata and MD5 hashes
+- `{board}_deleted`: Deleted post tracking
+- `{board}_users`: Tripcode and capcode information
+- `{board}_daily`: Daily statistics
+
+<Note>
+You can view the complete schema in `schema.sql` in the Ritual source directory.
+</Note>
+
+## Database initialization
+
+Ritual automatically creates database tables using the `asagi-tables` package:
+
+<Steps>
+  <Step title="Install asagi-tables">
+    During installation, you run the `install_asagi_tables.sh` script:
+    
+    ```bash
+    ./install_asagi_tables.sh
+    ```
+    
+    This clones and installs the asagi-tables package.
+  </Step>
+  
+  <Step title="First run creates schema">
+    When you run Ritual for the first time, it automatically:
+    1. Creates base tables for all configured boards
+    2. Creates side tables (threads, images, deleted, users, daily)
+    3. Creates indexes for query performance
+    
+    ```
+    Creating base tables.
+    Creating side tables.
+    Creating base indexes.
+    Creating side indexes.
+    ```
+  </Step>
+  
+  <Step title="Schema is reusable">
+    If you restart Ritual or add new boards, it only creates tables for boards that don't already have tables.
+  </Step>
+</Steps>
+
+## Performance tuning
+
+### SQLite optimization
+
+For better SQLite performance with large archives:
+
+```python
+# In your database setup
+db.run_query_tuple('PRAGMA journal_mode=WAL')
+db.run_query_tuple('PRAGMA synchronous=NORMAL')
+db.run_query_tuple('PRAGMA temp_store=memory')
+```
+
+These are already configured in the scanner tool (`scanner/scanner.py`).
+
+### MySQL optimization
+
+For MySQL, ensure proper configuration:
+
+```ini
+# /etc/mysql/my.cnf or ~/.my.cnf
+[mysqld]
+innodb_buffer_pool_size = 1G
+innodb_log_file_size = 256M
+max_allowed_packet = 64M
+```
+
+## Database access
+
+### Querying the database
+
+You can query Ritual's database using standard SQL tools:
+
+<Tabs>
+  <Tab title="SQLite">
+    ```bash
+    # Open SQLite CLI
+    sqlite3 ritual.db
+    
+    # Example queries
+    sqlite> SELECT COUNT(*) FROM g;
+    sqlite> SELECT * FROM g_threads ORDER BY time_op DESC LIMIT 10;
+    ```
+  </Tab>
+  
+  <Tab title="MySQL">
+    ```bash
+    # Open MySQL CLI
+    mysql -u ritual_user -p ritual
+    
+    # Example queries
+    mysql> SELECT COUNT(*) FROM g;
+    mysql> SELECT * FROM g_threads ORDER BY time_op DESC LIMIT 10;
+    ```
+  </Tab>
+</Tabs>
+
+### Read-only access
+
+<Warning>
+Do not modify the database while Ritual is running. This can cause data corruption or synchronization issues.
+</Warning>
+
+For safe read-only access while archiving:
+- **SQLite**: Open with `sqlite3 ritual.db -readonly`
+- **MySQL**: Create a read-only user
+
+## Migration between databases
+
+See the [Migration guide](/guides/migration) for instructions on:
+- Migrating from SQLite to MySQL
+- Migrating from MySQL to SQLite
+- Migrating from other Asagi-based archivers
+
+## Backup strategies
+
+See the [Backup guide](/guides/backups) for database backup best practices:
+- SQLite: `VACUUM INTO` for point-in-time backups
+- MySQL: `mysqldump` for logical backups
+- Automated backup scripts
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Database schema" icon="table" href="/reference/database-schema">
+    Detailed schema documentation and table structures
+  </Card>
+  <Card title="Backups" icon="floppy-disk" href="/guides/backups">
+    Learn how to back up your database and media files
+  </Card>
+</CardGroup>

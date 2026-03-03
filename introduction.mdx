@@ -1,0 +1,89 @@
+---
+title: Introduction
+description: A simple, flexible 4chan/vichan archiver with configurable filtering and media downloading
+---
+
+# Introduction
+
+Ritual is a 4chan archiver that focuses on simplicity and flexibility. Built with Python 3.12+, it provides powerful filtering capabilities to archive exactly what you need while avoiding unnecessary downloads.
+
+## What is Ritual?
+
+Ritual allows you to archive 4chan threads and media with fine-grained control over what gets saved. Whether you want to archive everything from a board, only specific threads matching certain keywords, or just the text without media, Ritual gives you complete control.
+
+The archiver runs synchronously in a step-by-step manner that's easy to read and debug, making it accessible for developers who want to understand or modify its behavior.
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Flexible filtering" icon="filter">
+    Configure whitelist and blacklist patterns for threads. Filter based on subject, comment content, and minimum character counts.
+  </Card>
+  
+  <Card title="Selective media downloading" icon="download">
+    Choose whether to download text, thumbnails, and/or full media for each post. Filter media downloads by OP, thread, or individual posts using regex patterns.
+  </Card>
+  
+  <Card title="Asagi schema" icon="database">
+    Uses the industry-standard Asagi database schema with support for both SQLite and MySQL databases.
+  </Card>
+  
+  <Card title="Duplicate detection" icon="copy">
+    Avoids downloading duplicate media files by tracking MD5 hashes and checking for existing files.
+  </Card>
+  
+  <Card title="Scanner tool" icon="magnifying-glass">
+    Includes a built-in scanner for cataloging and extracting metadata from media files in your archive.
+  </Card>
+  
+  <Card title="Rate limiting" icon="clock">
+    Configurable cooldown periods for requests, video downloads, and image downloads to respect server limits.
+  </Card>
+</CardGroup>
+
+## How it works
+
+Ritual operates in a continuous loop, processing each configured board sequentially:
+
+1. **Fetch catalog** - Retrieves the current catalog of threads from the board
+2. **Filter threads** - Applies your whitelist/blacklist rules to determine which threads to archive
+3. **Fetch posts** - Downloads thread data for modified or new threads
+4. **Save text** - Stores post text and metadata in the database using the Asagi schema
+5. **Download media** - Selectively downloads thumbnails and full media based on your configuration
+6. **Repeat** - Waits for the configured cooldown period and starts the next loop
+
+The archiver maintains state between runs, tracking which threads have been modified and which media has already been downloaded. This ensures efficient operation and avoids duplicate work.
+
+<Note>
+Ritual runs synchronously and processes boards one at a time. This design choice makes the code easy to read and debug while still being efficient enough for most archiving needs.
+</Note>
+
+## Database schema
+
+Ritual uses the [Asagi schema](https://github.com/sky-cake/asagi-tables), which is the de facto standard for 4chan archives. This ensures compatibility with existing tools and makes it easy to migrate data or use third-party analysis tools.
+
+The schema includes tables for:
+- Thread and post data
+- Media metadata and hashes
+- Board information
+- Deleted thread tracking
+
+## Get started
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Set up Python, dependencies, and database schemas
+  </Card>
+  
+  <Card title="Quick start" icon="rocket" href="/quickstart">
+    Configure your first board and start archiving
+  </Card>
+  
+  <Card title="Configuration" icon="gear" href="/configuration/overview">
+    Learn about advanced filtering and media download options
+  </Card>
+  
+  <Card title="Scanner tool" icon="magnifying-glass" href="/usage/scanner-tool">
+    Use the built-in scanner to analyze your media archive
+  </Card>
+</CardGroup>

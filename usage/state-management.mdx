@@ -1,0 +1,516 @@
+---
+title: "State Management"
+description: "How Ritual tracks thread state and optimizes archiving decisions"
+---
+
+## Overview
+
+Ritual uses persistent state to avoid redundant API requests and track thread lifecycle. The `State` class (from `state.py`) manages four types of cached data:
+
+- **Thread cache** - Last modified timestamps from catalog JSON
+- **HTTP cache** - HTTP `Last-Modified` headers for conditional requests
+- **Thread stats** - Reply counts, image counts, and latest post numbers
+- **Thread meta** - Page positions and bump times for deletion detection
+
+<Info>
+All state is stored in the `cache/` directory as JSON files and persists across archiver restarts.
+</Info>
+
+## State Files
+
+Ritual creates four cache files:
+
+| File | Purpose | Structure |
+|------|---------|----------|
+| `thread_cache.json` | Last modified timestamps | `{board: {thread_id: timestamp}}` |
+| `http_cache.json` | HTTP Last-Modified headers | `{url: header_string}` |
+| `thread_stats.json` | Thread statistics | `{board: {thread_id: {replies, images, most_recent_reply_no}}}` |
+| `thread_meta.json` | Page positions and bump times | `{board: {thread_id: [page, bump_time]}}` |
+
+### Thread Cache Structure
+
+From `state.py:57-67`:
+
+```python
+def get_cached_thread_cache(self) -> dict[str, dict[int, float]]:
+    """Example: {g: {123: 1717755968, 124: 1717755999}, ck: {456: 1717755968}, ...}"""
+    thread_cache = read_json(self.thread_cache_filepath)
+
+    if not thread_cache:
+        return dict()
+
+    return {
+        board: {int(tid): lm for tid, lm in tid_2_last_modified.items()}
+        for board, tid_2_last_modified in thread_cache.items()
+    }
+```
+
+Example `thread_cache.json`:
+
+```json
+{
+  "g": {
+    "98765432": 1717755968,
+    "98765433": 1717755999
+  },
+  "ck": {
+    "12345678": 1717756120
+  }
+}
+```
+
+## How Thread State Affects Archiving
+
+The state system determines which threads need to be fetched and archived:
+
+### Thread Modified Detection
+
+From `state.py:111-140`, the `is_thread_modified_cache_update` function:
+
+```python
+def is_thread_modified_cache_update(self, board: str, thread: dict) -> bool:
+    """
+    `True` indicates we should download the thread.
+    """
+
+    tid = thread['no']
+    thread_last_modified = thread.get('last_modified')
+
+    if board not in self.thread_cache:
+        self.thread_cache[board] = dict()
+
+    # should come before entry pruning
+    thread_last_modified_cached = self.thread_cache[board].get(tid)
+
+    # last_modified changed
+    if thread_last_modified and thread_last_modified_cached and thread_last_modified != thread_last_modified_cached:
+        # Update the thread's last modified time in thread_cache.
+        self.thread_cache[board][tid] = thread_last_modified
+        return True
+
+    # new thread
+    if thread_last_modified_cached is None:
+        # Update the thread's last modified time in thread_cache.
+        self.thread_cache[board][tid] = thread_last_modified
+        return True
+
+    # Update the thread's last modified time even if unchanged
+    self.thread_cache[board][tid] = thread_last_modified
+
+    return False
+```
+
+### Decision Logic
+
+The function returns `True` (download the thread) when:
+
+1. **Thread is new** - `thread_id` not in cache
+2. **Thread is modified** - `last_modified` timestamp has changed
+
+The function returns `False` (skip the thread) when:
+
+- Thread exists in cache and `last_modified` timestamp is unchanged
+
+<Note>
+The `last_modified` timestamp comes from the catalog JSON and represents when the thread was last bumped or received a new post.
+</Note>
+
+## Thread Stats Tracking
+
+Thread stats help detect when new replies or images are added:
+
+### Setting Thread Stats
+
+From `state.py:147-159`:
+
+```python
+def set_thread_stats(self, board: str, tid: int, replies: int | None, images: int | None, most_recent_reply_no: int | None):
+    if board not in self.thread_stats:
+        self.thread_stats[board] = dict()
+    if tid not in self.thread_stats[board]:
+        self.thread_stats[board][tid] = dict()
+    if replies is not None:
+        self.thread_stats[board][tid]['replies'] = replies
+    if images is not None:
+        self.thread_stats[board][tid]['images'] = images
+    if most_recent_reply_no is not None:
+        self.thread_stats[board][tid]['most_recent_reply_no'] = most_recent_reply_no
+
+    self.prune_old_thread_stats(board)
+```
+
+### Retrieving Thread Stats
+
+From `state.py:142-145`:
+
+```python
+def get_thread_stats(self, board: str, tid: int) -> dict | None:
+    if board not in self.thread_stats:
+        return None
+    return self.thread_stats[board].get(tid)
+```
+
+### Stats Structure
+
+```json
+{
+  "g": {
+    "98765432": {
+      "replies": 145,
+      "images": 78,
+      "most_recent_reply_no": 98765577
+    }
+  }
+}
+```
+
+<Info>
+Thread stats are used to track thread growth and determine if new content has been posted since the last archive.
+</Info>
+
+## Thread Metadata Tracking
+
+Thread metadata tracks page positions and bump times for deletion detection:
+
+### Updating Thread Meta
+
+From `state.py:192-204`:
+
+```python
+def update_thread_meta(self, board: str, tid_2_page: dict[int, int], tid_2_thread: dict[int, dict]):
+    """update page positions and bump times from catalog data."""
+    if board not in self.thread_meta:
+        self.thread_meta[board] = dict()
+
+    for tid, page in tid_2_page.items():
+        thread = tid_2_thread.get(tid, dict())
+        # last reply time, op time, 0
+        # if 0, no harm done - thread deletion logic still relies on page number, n replies, and not in archive
+        bump_time = thread.get('last_modified', thread.get('time', 0))
+        self.thread_meta[board][tid] = [page, bump_time]
+
+    self.prune_old_thread_meta(board)
+```
+
+### Meta Structure
+
+From `state.py:81-91`:
+
+```python
+def get_cached_thread_meta(self) -> dict[str, dict[int, list]]:
+    """Example: {g: {123: [page, bump_time], ...}, ...}"""
+    thread_meta = read_json(self.thread_meta_filepath)
+
+    if not thread_meta:
+        return dict()
+
+    return {
+        board: {int(tid): meta for tid, meta in tid_2_meta.items()}
+        for board, tid_2_meta in thread_meta.items()
+    }
+```
+
+Example `thread_meta.json`:
+
+```json
+{
+  "g": {
+    "98765432": [3, 1717755968],
+    "98765433": [1, 1717756200]
+  }
+}
+```
+
+Where:
+- First element is **page number** (0-indexed)
+- Second element is **bump time** (Unix timestamp)
+
+### Retrieving and Removing Meta
+
+From `state.py:221-230`:
+
+```python
+def get_thread_meta(self, board: str, tid: int) -> list | None:
+    """returns [page, bump_time] or None if not tracked."""
+    if board not in self.thread_meta:
+        return
+    return self.thread_meta[board].get(tid)
+
+def remove_thread_meta(self, board: str, tid: int):
+    """remove thread from tracking after deletion/archive/prune."""
+    if board in self.thread_meta and tid in self.thread_meta[board]:
+        del self.thread_meta[board][tid]
+```
+
+## HTTP Cache for Conditional Requests
+
+Ritual uses HTTP `Last-Modified` headers to avoid re-downloading unchanged threads:
+
+### Setting HTTP Last-Modified
+
+From `state.py:179-186`:
+
+```python
+def set_http_last_modified(self, url: str, last_modified: str | None):
+    if last_modified:
+        self.http_cache[url] = last_modified
+        if len(self.http_cache) > 500:
+            oldest_key = next(iter(self.http_cache))
+            del self.http_cache[oldest_key]
+    elif url in self.http_cache:
+        del self.http_cache[url]
+```
+
+### Getting HTTP Last-Modified
+
+From `state.py:176-177`:
+
+```python
+def get_http_last_modified(self, url: str) -> str | None:
+    return self.http_cache.get(url)
+```
+
+### Thread URL Helper
+
+From `state.py:188-190`:
+
+```python
+def get_thread_url_last_modified(self, board: str, tid: int) -> str | None:
+    url = configs.url_thread.format(board=board, thread_id=tid)
+    return self.get_http_last_modified(url)
+```
+
+<Note>
+The HTTP cache is limited to 500 entries and uses FIFO eviction when full.
+</Note>
+
+## The `ignore_thread_cache` Option
+
+### What It Does
+
+From `state.py:34-36`:
+
+```python
+@property
+def ignore_last_modified(self) -> bool:
+    return self.loop.is_first_loop and configs.ignore_thread_cache
+```
+
+### Configuration
+
+Set in `configs.py` (from `rename_to_configs.py:11`):
+
+```python
+ignore_thread_cache = True  # on restarts, ignore thread cache and go through all threads
+```
+
+### Behavior
+
+<CodeGroup>
+```python When ignore_thread_cache = True
+# On first loop after restart:
+# - All threads in catalog are processed
+# - last_modified timestamps are ignored
+# - Useful for catching up after downtime
+```
+
+```python When ignore_thread_cache = False
+# On first loop after restart:
+# - Only threads with changed last_modified are processed
+# - Faster startup, may miss updates during downtime
+```
+</CodeGroup>
+
+<Warning>
+Setting `ignore_thread_cache = True` increases API usage on the first loop. Use this when you need to ensure all threads are checked after a restart.
+</Warning>
+
+## State Persistence
+
+### Saving State
+
+From `state.py:38-48`:
+
+```python
+def save(self):
+    '''writes every cache'''
+    try:
+        write_json_obj_to_file(self.thread_cache_filepath, self.thread_cache)
+        write_json_obj_to_file(self.http_cache_filepath, self.http_cache)
+        write_json_obj_to_file(self.thread_stats_filepath, self.thread_stats)
+        write_json_obj_to_file(self.thread_meta_filepath, self.thread_meta)
+    except Exception as e:
+        configs.logger.error(f'Failed to save state: {e}')
+        configs.logger.error(traceback.format_exc())
+        raise e
+```
+
+### Reading State
+
+From `state.py:50-55`:
+
+```python
+def read(self):
+    '''reads in every cache'''
+    self.thread_cache = self.get_cached_thread_cache()
+    self.http_cache = read_json(self.http_cache_filepath) or dict()
+    self.thread_stats = self.get_cached_thread_stats()
+    self.thread_meta = self.get_cached_thread_meta()
+```
+
+### When State is Saved
+
+From `main.py:92`:
+
+```python
+fetcher.sleep()
+state.save()  # Saved after each successful loop
+
+loop.increment_loop()
+loop.log_board_durations()
+loop.sleep()
+```
+
+State is also saved during error handling (from `main.py:69-75`):
+
+```python
+def save_on_error(state: State, db: RitualDb):
+    configs.logger.info('Saving state...')
+    state.save()
+    configs.logger.info('Done')
+    configs.logger.info('Saving database...')
+    db.save_and_close()
+    configs.logger.info('Done')
+```
+
+<Info>
+State is automatically saved after every successful loop and whenever a critical error occurs.
+</Info>
+
+## Cache Pruning
+
+To prevent unbounded growth, Ritual prunes old entries from each cache:
+
+### Thread Cache Pruning
+
+From `state.py:93-109`:
+
+```python
+def prune_old_threads(self, board: str):
+    # Don't let the dict grow over N entries per board.
+    if board not in self.thread_cache:
+        return
+
+    N = 200
+    board_cache = self.thread_cache[board]
+    if (count := len(board_cache)) > N:
+        # In case of multiple stickies, or similar special threads, we delete the extras, plus M oldest threads
+        M = count - N + 10
+        tid_timestamp_pairs = [(tid, board_cache.get(tid) or 0.0) for tid in board_cache.keys()]
+        tid_timestamp_pairs.sort(key=self.get_timestamp_from_pair)
+        for stale_id, _ in tid_timestamp_pairs[:M]:
+            del board_cache[stale_id]  # prune
+```
+
+### Stats and Meta Pruning
+
+From `state.py:161-174` and `state.py:206-219`:
+
+```python
+def prune_old_thread_stats(self, board: str):
+    """don't let the dict grow over N entries per board."""
+    if board not in self.thread_stats:
+        return
+
+    N = 200
+    board_stats = self.thread_stats[board]
+    if (count := len(board_stats)) > N:
+        # delete the oldest threads based on most_recent_reply_no
+        M = count - N + 10
+        tid_reply_pairs = [(tid, stats.get('most_recent_reply_no', 0) or 0) for tid, stats in board_stats.items()]
+        tid_reply_pairs.sort(key=lambda pair: pair[1])
+        for stale_id, _ in tid_reply_pairs[:M]:
+            del board_stats[stale_id]
+```
+
+### Pruning Strategy
+
+- **Limit**: 200 entries per board
+- **Trigger**: When count exceeds 200
+- **Action**: Delete 10 oldest entries (M = count - 200 + 10)
+
+<Note>
+Pruning happens automatically whenever stats or metadata are updated. This prevents memory usage from growing indefinitely.
+</Note>
+
+## State in the Archiving Workflow
+
+Here's how state is used during a typical archiving cycle:
+
+<Steps>
+  <Step title="Initialize State">
+    On startup, `State` reads all cache files from disk:
+    ```python
+    state = State(loop)
+    # Reads thread_cache.json, http_cache.json, thread_stats.json, thread_meta.json
+    ```
+  </Step>
+
+  <Step title="Fetch Catalog">
+    The archiver fetches the catalog for each board and updates thread metadata:
+    ```python
+    catalog = Catalog(fetcher, board)
+    catalog.fetch_catalog()
+    state.update_thread_meta(board, catalog.tid_2_page, catalog.tid_2_thread)
+    ```
+  </Step>
+
+  <Step title="Filter Threads">
+    The filter checks if threads have been modified:
+    ```python
+    for thread in threads:
+        if state.is_thread_modified_cache_update(board, thread):
+            # Thread has changed, fetch it
+        else:
+            # Thread unchanged, skip it
+    ```
+  </Step>
+
+  <Step title="Save State">
+    After processing all boards, state is persisted:
+    ```python
+    state.save()
+    # Writes all cache files back to disk
+    ```
+  </Step>
+</Steps>
+
+## Benefits of State Management
+
+### Reduced API Requests
+
+- Only fetch threads that have changed
+- Use HTTP conditional requests with `Last-Modified` headers
+- Skip unchanged content automatically
+
+### Faster Archiving
+
+- Avoid re-processing unchanged threads
+- Jump directly to new or modified content
+- Reduce network bandwidth usage
+
+### Resumable Operations
+
+- State persists across restarts
+- No data loss when archiver crashes
+- Pick up where you left off
+
+### Thread Lifecycle Tracking
+
+- Detect when threads are deleted
+- Track thread progression through pages
+- Identify archived vs. active threads
+
+<Info>
+The state management system is what makes Ritual efficient for long-running archival operations. It ensures you only download what's necessary.
+</Info>

@@ -1,0 +1,382 @@
+---
+title: "Scanner Tool"
+description: "Extract and index file metadata from your archived media"
+---
+
+## What is the Scanner Tool?
+
+The scanner tool (`scanner/scanner.py`) is a standalone utility that catalogs your archived media files and extracts metadata including:
+
+- File dimensions (width, height)
+- File hashes (SHA256, MD5)
+- File sizes
+- File paths and extensions
+
+This metadata is stored in a separate SQLite database for fast duplicate detection and file analysis.
+
+<Info>
+The scanner tool is separate from the main archiver. It's used to build an index of already-downloaded media files.
+</Info>
+
+## When to Use the Scanner
+
+Use the scanner tool when you need to:
+
+- **Index existing archives** - Catalog media from previous archiving runs
+- **Detect duplicates** - Find duplicate files across different threads/boards
+- **Verify integrity** - Check file hashes against expected values
+- **Migrate archives** - Build metadata database for existing file collections
+
+## Command-Line Usage
+
+### Basic Syntax
+
+```bash
+python3 scanner.py <db_path> <root_dir>
+```
+
+### Parameters
+
+- `db_path` - Path to the scanner database (will be created if it doesn't exist)
+- `root_dir` - Root directory containing media files to scan
+
+### Example
+
+```bash
+python3 scanner/scanner.py ~/scanner.db ~/ritual/media
+```
+
+Output:
+```
+db_path='/home/user/scanner.db'
+root_dir='/home/user/ritual/media'
+skip_dirnames={'thumb'}
+Proceed? (y/n)
+```
+
+<Warning>
+The scanner will prompt for confirmation before processing. Type `y` and press Enter to continue.
+</Warning>
+
+## How the Scanner Works
+
+The scanner operates in two phases:
+
+### Phase 1: Catalog Filesystem
+
+The `catalog_filesystem` function (from `scanner.py:32-55`) performs a fast scan of the directory structure:
+
+```python
+def catalog_filesystem(root_dir: str, db: ScannerDb, skip_dirnames: set[str]):
+    dirpath_2_id = dict()
+    ext_2_id = db.fetch_ext_map()
+    batch_size = 25_000
+    counter = Counter('catalog_filesystem', batch_size)
+
+    sql_insert = '''insert or ignore into file (dir_id, filename_no_ext, ext_id) values (?,?,?)'''
+
+    for batch in batched(iter_media_files(root_dir, skip_dirnames=skip_dirnames), batch_size):
+        batch = tuple(
+            (
+                db.get_and_set_dir_id(dirpath_2_id, dirpath),
+                filename_no_ext,
+                db.get_and_set_ext_id(ext_2_id, ext),
+            )
+            for dirpath, filename_no_ext, ext in batch
+        )
+
+        db.run_query_many(sql_insert, batch, commit=True)
+        counter(increment_by=len(batch))
+    print('\ncatalog_filesystem, completed')
+```
+
+**What it does:**
+
+1. Walks the directory tree recursively
+2. Identifies image and video files by extension
+3. Stores file paths in the database (without reading file contents)
+4. Processes files in batches of 25,000 for efficiency
+5. Skips thumbnail directories (`thumb/`)
+
+**Supported file types** (from `scanner.py:150-151`):
+
+```python
+IMAGE_EXTS = {'jpg', 'jpeg', 'png', 'gif'}
+VIDEO_EXTS = {'mp4', 'webm'}
+```
+
+### Phase 2: Gather Metadata
+
+The `gather_metadata` function (from `scanner.py:58-136`) extracts detailed metadata:
+
+```python
+def gather_metadata(db: ScannerDb):
+    limit = 500
+    counter = Counter('gather_metadata', limit)
+
+    missing_meta_file_count = db.run_query_tuple('select count(*) from file where attempted is null')[0][0]
+    if missing_meta_file_count == 0:
+        print('All files have had metadata scanned and stored.')
+        return
+
+    print(f'Starting to gather metadata for {missing_meta_file_count} files...')
+
+    while True:
+        sql_select = f'''
+        select
+            dirpath,
+            filename_no_ext,
+            ext,
+            dir_id,
+            ext_id
+        from file
+            join extension using (ext_id)
+            join directory using (dir_id)
+        where
+            file.attempted is null
+        limit {limit}
+        '''
+        rows = db.run_query_tuple(sql_select)
+        if not rows:
+            break
+
+        params = []
+        for row in rows:
+            path = get_and_set_metadata(Path(
+                row[0],
+                row[1],
+                row[2],
+                row[3],
+                row[4],
+            ))
+            params.append((
+                path.dir_id,
+                path.filename_no_ext,
+                path.ext_id,
+                1,
+                path.sha256,
+                path.md5_b64,
+                path.bsize,
+                path.w,
+                path.h,
+            ))
+
+        db.run_query_many(sql_insert, params=params, commit=True)
+        counter(increment_by=len(rows))
+    print('\ngather_metadata, completed')
+```
+
+**What it does:**
+
+1. Finds files without metadata (`attempted is null`)
+2. Reads each file to extract:
+   - SHA256 hash
+   - MD5 hash (base64 encoded)
+   - File size in bytes
+   - Image/video dimensions
+3. Stores metadata in the database
+4. Processes files in batches of 500
+5. Continues until all files have metadata
+
+### Metadata Extraction (from `scanner.py:23-29`)
+
+```python
+def get_and_set_metadata(path: Path) -> Path:
+    path.bsize = os.path.getsize(path.fullpath)
+    path.sha256, path.md5_b64 = get_hashes_for_file(path.fullpath, HASH_BUFFER_LIMIT)
+    path.w, path.h = get_dimensions(path.fullpath)
+
+    return path
+```
+
+<Note>
+The hash buffer limit is set to 10MB. Files are hashed incrementally to avoid loading large files entirely into memory.
+</Note>
+
+## Real Usage Example
+
+Here's a complete example of running the scanner:
+
+<Steps>
+  <Step title="Navigate to the scanner directory">
+    ```bash
+    cd ~/workspace/source/scanner
+    ```
+  </Step>
+
+  <Step title="Run the scanner">
+    ```bash
+    python3 scanner.py ~/scanner.db ~/ritual/media
+    ```
+  </Step>
+
+  <Step title="Confirm the operation">
+    ```
+    db_path='/home/user/scanner.db'
+    root_dir='/home/user/ritual/media'
+    skip_dirnames={'thumb'}
+    Proceed? (y/n) y
+    ```
+  </Step>
+
+  <Step title="Monitor progress">
+    ```
+    catalog_filesystem: 25000/unknown processed
+    catalog_filesystem: 50000/unknown processed
+    catalog_filesystem: 75000/unknown processed
+    catalog_filesystem, completed
+
+    Starting to gather metadata for 75000 files...
+    gather_metadata: 500/75000 processed
+    gather_metadata: 1000/75000 processed
+    ...
+    gather_metadata, completed
+    ```
+  </Step>
+</Steps>
+
+## Progress Tracking
+
+The scanner uses a `Counter` class to display progress:
+
+- **catalog_filesystem** - Reports every 25,000 files
+- **gather_metadata** - Reports every 500 files with total count
+
+Example output:
+```
+catalog_filesystem: 75000/unknown processed
+
+Starting to gather metadata for 75000 files...
+gather_metadata: 5000/75000 processed
+gather_metadata: 10000/75000 processed
+```
+
+## Configuration Options
+
+### Skip Directories
+
+By default, the scanner skips the `thumb/` directory (from `scanner.py:146`):
+
+```python
+skip_dirnames = {'thumb'}  # asagi fs layout
+```
+
+This avoids processing thumbnail duplicates when using the Asagi filesystem layout.
+
+### Supported Extensions
+
+You can modify the supported file types (from `scanner.py:150-151`):
+
+```python
+IMAGE_EXTS = {'jpg', 'jpeg', 'png', 'gif'}
+VIDEO_EXTS = {'mp4', 'webm'}
+```
+
+<Info>
+The scanner can process any image or video format supported by the `get_dimensions()` function from `file_meta_extract`.
+</Info>
+
+### Hash Buffer Limit
+
+Controls how much of each file is hashed (from `scanner.py:154`):
+
+```python
+HASH_BUFFER_LIMIT = 10 * 1024 * 1024  # 10MB
+```
+
+<Note>
+Imageboard file size limits are typically 4MB, so 10MB is sufficient for complete hashing.
+</Note>
+
+## Database Schema
+
+The scanner creates these tables:
+
+- **file** - Stores file paths and metadata
+- **directory** - Maps directory paths to IDs
+- **extension** - Maps file extensions to IDs
+
+The schema uses SQLite with Write-Ahead Logging (WAL) for performance (from `scanner.py:165-169`):
+
+```python
+sqls = '''
+pragma journal_mode=wal;
+pragma synchronous=normal;
+pragma temp_store=memory;
+'''
+```
+
+## Performance Considerations
+
+### Speed
+
+- **Phase 1 (catalog)** - Very fast, limited by filesystem I/O
+- **Phase 2 (metadata)** - Slower, limited by file reading and hashing
+
+### Batch Processing
+
+- Files are processed in batches to reduce database commits
+- `catalog_filesystem`: 25,000 files per batch
+- `gather_metadata`: 500 files per batch
+
+### Resumable Operation
+
+The scanner is **fully resumable**:
+
+- Files are marked with `attempted = 1` after metadata extraction
+- If interrupted, rerun the scanner and it will skip already-processed files
+- Only files with `attempted is null` are processed
+
+<Warning>
+Do not delete the scanner database while processing is incomplete. The database tracks which files have been scanned.
+</Warning>
+
+### Typical Performance
+
+For reference:
+
+- **catalog_filesystem**: ~1 million files in a few minutes
+- **gather_metadata**: ~5-10 files per second (depends on file size and disk speed)
+
+## Use Cases
+
+### Duplicate Detection
+
+After scanning, query the database to find duplicates:
+
+```sql
+SELECT sha256, COUNT(*) as count
+FROM file
+WHERE sha256 IS NOT NULL
+GROUP BY sha256
+HAVING count > 1;
+```
+
+### File Statistics
+
+Get statistics about your archive:
+
+```sql
+SELECT 
+    ext,
+    COUNT(*) as file_count,
+    SUM(bsize) as total_bytes
+FROM file
+JOIN extension USING (ext_id)
+GROUP BY ext;
+```
+
+### Find Large Files
+
+```sql
+SELECT dirpath, filename_no_ext, ext, bsize
+FROM file
+JOIN directory USING (dir_id)
+JOIN extension USING (ext_id)
+WHERE bsize > 3000000
+ORDER BY bsize DESC;
+```
+
+<Info>
+The scanner database is separate from Ritual's main database. Use standard SQLite tools to query it.
+</Info>

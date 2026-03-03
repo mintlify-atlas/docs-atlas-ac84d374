@@ -1,0 +1,335 @@
+---
+title: 'Database Schema'
+description: 'Understanding the Asagi database schema used by Ritual'
+---
+
+Ritual uses the **Asagi schema**, a well-established format for archiving imageboards. This ensures compatibility with existing tools and viewers.
+
+## Schema Overview
+
+The Asagi schema consists of:
+
+- **Base tables** - One per board (e.g., `g`, `pol`, `ck`) containing all posts
+- **Side tables** - Supporting tables with `_suffix` naming (e.g., `g_threads`, `g_images`)
+
+<Note>
+  Ritual uses the [asagi-tables](https://github.com/sky-cake/asagi-tables) library for schema creation and management.
+</Note>
+
+## Table Types
+
+### Base Tables
+
+Each board gets its own table (e.g., `g`, `ck`, `pol`) containing all posts:
+
+<AccordionGroup>
+  <Accordion title="Post Identification" icon="fingerprint">
+    - `num` - Post number (unique identifier)
+    - `subnum` - Subpost number (usually 0, for future use)
+    - `thread_num` - Thread ID (OP's post number)
+    - `op` - Boolean indicating if this is the OP (1/0)
+  </Accordion>
+  
+  <Accordion title="Timestamps" icon="clock">
+    - `timestamp` - Unix timestamp when post was created
+    - `timestamp_expired` - When thread was pruned/expired
+    - `preview_orig` - Original preview timestamp
+    - `preview_w` / `preview_h` - Preview dimensions
+  </Accordion>
+  
+  <Accordion title="Content" icon="message">
+    - `name` - Poster name/tripcode
+    - `trip` - Tripcode
+    - `email` - Email field
+    - `title` - Thread subject/title
+    - `comment` - Post content (HTML)
+    - `capcode` - Moderator/admin capcode
+  </Accordion>
+  
+  <Accordion title="Media" icon="image">
+    - `media_filename` - Original filename
+    - `media_w` / `media_h` - Image dimensions
+    - `media_size` - File size in bytes
+    - `media_hash` - MD5 hash (base64)
+    - `media_orig` - Original media filename with timestamp
+    - `spoiler` - Spoiler flag (1/0)
+  </Accordion>
+  
+  <Accordion title="Metadata" icon="tag">
+    - `poster_hash` - Poster ID hash
+    - `poster_country` - Country code
+    - `exif` - EXIF data (JSON)
+    - `sticky` - Sticky flag (1/0)
+    - `locked` - Locked/archived flag (1/0)
+    - `deleted` - Deletion flag (1/0)
+  </Accordion>
+</AccordionGroup>
+
+### Side Tables
+
+Ritual creates these supporting tables for each board:
+
+<Tabs>
+  <Tab title="threads">
+    **`{board}_threads`** - Thread statistics and metadata
+    
+    | Column | Type | Description |
+    |--------|------|-------------|
+    | `thread_num` | INT | Thread ID (primary key) |
+    | `time_op` | INT | OP post timestamp |
+    | `time_last` | INT | Last reply timestamp |
+    | `time_bump` | INT | Last bump timestamp |
+    | `time_ghost` | INT | Ghost bump time (future use) |
+    | `time_ghost_bump` | INT | Ghost bump time (future use) |
+    | `time_last_modified` | INT | Catalog last_modified |
+    | `nreplies` | INT | Number of replies |
+    | `nimages` | INT | Number of images |
+    | `sticky` | BOOLEAN | Sticky status |
+    | `locked` | BOOLEAN | Locked/archived status |
+    
+    <Note>
+      Updated via `upsert_thread_stats()` in db/ritual.py:187
+    </Note>
+  </Tab>
+  
+  <Tab title="images">
+    **`{board}_images`** - Unique media tracking
+    
+    | Column | Type | Description |
+    |--------|------|-------------|
+    | `media_hash` | VARCHAR | MD5 hash (primary key) |
+    | `media` | VARCHAR | Filename (e.g., "1234567890.jpg") |
+    | `total` | INT | Number of times posted |
+    | `banned` | BOOLEAN | Whether media is banned |
+    
+    **Purpose:**
+    - Tracks unique media files across all posts
+    - Counts how many times each file was posted
+    - Prevents re-downloading duplicate files
+    - Allows marking banned media
+    
+    <Warning>
+      The `total` field is not 100% accurate due to partial media downloading support.
+    </Warning>
+  </Tab>
+  
+  <Tab title="deleted">
+    **`{board}_deleted`** - Deleted post tracking
+    
+    Currently created by asagi-tables but not actively used by Ritual. Deletion status is tracked via the `deleted` column in base tables instead.
+  </Tab>
+  
+  <Tab title="users">
+    **`{board}_users`** - User/tripcode tracking
+    
+    Created by asagi-tables for future use. Not currently populated by Ritual.
+  </Tab>
+  
+  <Tab title="daily">
+    **`{board}_daily`** - Daily statistics
+    
+    Created by asagi-tables for future use. Not currently populated by Ritual.
+  </Tab>
+</Tabs>
+
+## Schema Creation
+
+Ritual automatically creates all necessary tables on first run:
+
+<Steps>
+  <Step title="Initialize Database">
+    The `create_ritual_db()` function (db/ritual.py:222) creates either a MySQL or SQLite database connection based on `configs.db_type`.
+  </Step>
+  
+  <Step title="Create Base Tables">
+    Calls `asagi-tables` to create base tables for each configured board:
+    ```python
+    await execute_action('base', 'table_add', boards_list)
+    ```
+  </Step>
+  
+  <Step title="Create Side Tables">
+    Creates threads, images, deleted, users, and daily tables:
+    ```python
+    await execute_action('side', 'table_add', boards_list, 
+                        side_tables=['threads', 'images', 'deleted', 'users', 'daily'])
+    ```
+  </Step>
+  
+  <Step title="Add Indexes">
+    Creates indexes for both base and side tables for optimal query performance:
+    ```python
+    await execute_action('base', 'index_add', boards_list)
+    await execute_action('side', 'index_add', boards_list, side_tables=[...])
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  See db/ritual.py:21-36 for the full initialization code.
+</Note>
+
+## RitualDb Class
+
+The `RitualDb` class (db/ritual.py:14) provides a high-level interface to the database:
+
+### Core Methods
+
+<AccordionGroup>
+  <Accordion title="upsert_posts()" icon="database">
+    **Location:** db/ritual.py:177
+    
+    Inserts or updates posts in the base table.
+    
+    ```python
+    db.upsert_posts(board='g', posts=[{...}, {...}])
+    ```
+    
+    - Converts 4chan API format to Asagi schema
+    - Handles HTML unescaping based on config
+    - Uses batch inserts (500 posts per batch)
+    - Upserts on conflict with `(num, subnum)`
+  </Accordion>
+  
+  <Accordion title="upsert_thread_stats()" icon="chart-line">
+    **Location:** db/ritual.py:187
+    
+    Updates thread statistics in `{board}_threads` table.
+    
+    ```python
+    db.upsert_thread_stats(board='g', thread_stats={
+        'thread_num': 12345,
+        'nreplies': 150,
+        'nimages': 42,
+        'sticky': 0,
+        'locked': 0,
+        # ... other fields
+    })
+    ```
+  </Accordion>
+  
+  <Accordion title="upsert_image()" icon="image">
+    **Location:** db/ritual.py:160
+    
+    Tracks unique media in `{board}_images` table.
+    
+    ```python
+    db.upsert_image(board='g', media_hash='abc123...', media='1234567890.jpg')
+    ```
+    
+    - Increments `total` count on duplicate
+    - Only called when media is actually downloaded
+  </Accordion>
+  
+  <Accordion title="get_tid_2_existing_pids()" icon="magnifying-glass">
+    **Location:** db/ritual.py:41
+    
+    Fetches all existing post IDs for given threads.
+    
+    ```python
+    tid_2_pids = db.get_tid_2_existing_pids(board='g', tids=[12345, 67890])
+    # Returns: {12345: {100, 101, 102}, 67890: {200, 201}}
+    ```
+    
+    Used to detect deleted posts by comparing with fetched data.
+  </Accordion>
+  
+  <Accordion title="set_posts_deleted()" icon="trash">
+    **Location:** db/ritual.py:66
+    
+    Marks posts as deleted in the database.
+    
+    ```python
+    db.set_posts_deleted(board='g', pids=[100, 101, 102])
+    ```
+    
+    Sets `deleted = 1` for specified post IDs.
+  </Accordion>
+  
+  <Accordion title="set_threads_archived()" icon="box-archive">
+    **Location:** db/ritual.py:97
+    
+    Marks threads as archived (locked).
+    
+    ```python
+    db.set_threads_archived(board='g', tids=[12345, 67890])
+    ```
+    
+    Sets `locked = 1` for threads found in archive.json.
+  </Accordion>
+  
+  <Accordion title="get_banned_hashes()" icon="ban">
+    **Location:** db/ritual.py:142
+    
+    Retrieves media hashes marked as banned.
+    
+    ```python
+    banned = db.get_banned_hashes(board='g', media_hashes=['abc123...', 'def456...'])
+    # Returns: {'abc123...'}
+    ```
+    
+    Used by Filter to skip downloading banned media.
+  </Accordion>
+</AccordionGroup>
+
+## Database Abstraction
+
+Ritual supports both SQLite and MySQL through a common interface:
+
+```
+RitualDb (db/ritual.py)
+    ↓
+BaseDb (db/base.py) - Abstract interface
+    ↓
+    ├─→ SqliteDb (db/sqlite.py)
+    └─→ MysqlDb (db/mysql.py)
+```
+
+### BaseDb Interface
+
+All database implementations must provide:
+
+- `placeholder` - Parameter placeholder (`?` for SQLite, `%s` for MySQL)
+- `get_upsert_clause()` - Generate ON CONFLICT/ON DUPLICATE KEY clause
+- `run_query_tuple()` - Execute query with tuple parameters
+- `run_query_dict()` - Execute query returning dict rows
+- `save()` / `close()` / `save_and_close()` - Connection management
+
+## Querying the Database
+
+<CodeGroup>
+```sql SQLite Example
+-- Get all threads on /g/
+SELECT thread_num, nreplies, nimages 
+FROM g_threads 
+ORDER BY time_last DESC;
+
+-- Get all posts in a thread
+SELECT num, timestamp, name, comment, media_filename
+FROM g
+WHERE thread_num = 12345
+ORDER BY num ASC;
+
+-- Find posts with images
+SELECT num, media_filename, media_size
+FROM g
+WHERE media_hash IS NOT NULL
+  AND deleted = 0;
+```
+
+```sql MySQL Example  
+-- Same queries work for MySQL
+SELECT thread_num, nreplies, nimages 
+FROM g_threads 
+ORDER BY time_last DESC;
+
+-- Get unique media count
+SELECT COUNT(*) as unique_images
+FROM g_images
+WHERE banned = 0;
+```
+</CodeGroup>
+
+<Tip>
+  Use database viewers like [DB Browser for SQLite](https://sqlitebrowser.org/) or [MySQL Workbench](https://www.mysql.com/products/workbench/) to explore your archive visually.
+</Tip>

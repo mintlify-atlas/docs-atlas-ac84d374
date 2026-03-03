@@ -1,0 +1,462 @@
+---
+title: Troubleshooting
+description: Common issues and solutions for Ritual archiver
+---
+
+## Critical Error Handling
+
+Ritual has built-in error recovery for critical failures in the main loop.
+
+### Error Recovery Mechanism
+
+When a critical error occurs (main.py:103-116):
+
+1. **Automatic State Saving**: State and database are saved immediately
+2. **Progressive Backoff**: Sleep time increases with each error (60s × error count)
+3. **Auto-Retry**: Up to 5 critical errors before the program exits
+4. **Graceful Exit**: After 5 critical errors, the program stops safely
+
+<Tip>
+The progressive backoff gives transient issues (network problems, temporary API outages) time to resolve themselves.
+</Tip>
+
+<Accordion title="View error recovery logic">
+```python
+critical_error_count += 1
+n_critical_errors = 5
+if critical_error_count >= n_critical_errors:
+    configs.logger.error(f'Critical error count reached {n_critical_errors}, exiting...')
+    break
+
+sleep_for = critical_error_count * 60
+configs.logger.info(f'Sleeping for {sleep_for}s, maybe the issue will resolve itself by then...')
+```
+</Accordion>
+
+## MD5 Mismatch Issues
+
+### Problem
+
+Downloaded files may have MD5 hashes that don't match what the 4chan API reports.
+
+### Causes
+
+- Cloudflare recompression of media files
+- Network corruption during transfer
+- CDN caching issues
+
+### Solution
+
+Ritual uses random query strings to bypass Cloudflare's recompressed media (utils.py:408-410):
+
+```python
+url = f'{url}?{get_random_querystring()}'
+```
+
+### Configuration Option
+
+In `configs.py`, set:
+
+```python
+download_files_with_mismatched_md5 = False  # Skip mismatched files (default)
+download_files_with_mismatched_md5 = True   # Download anyway
+```
+
+<Warning>
+Setting `download_files_with_mismatched_md5 = True` will download files even when MD5 validation fails. Use with caution as this may save corrupted files.
+</Warning>
+
+### Detection
+
+When MD5 mismatch occurs, you'll see:
+
+```
+Hashes differ: url='...' filepath='...' told=... found=...
+```
+
+## Database Connection Problems
+
+### SQLite Issues
+
+<Steps>
+
+<Step title="Database locked">
+  
+  **Symptoms**: `database is locked` errors
+  
+  **Causes**:
+  - Multiple Ritual instances accessing the same database
+  - Database file on a network mount
+  - Insufficient disk space
+  
+  **Solutions**:
+  - Stop other Ritual instances
+  - Move database to local disk
+  - Check disk space with `df -h`
+  
+</Step>
+
+<Step title="Corrupted database">
+  
+  **Symptoms**: Errors reading/writing data
+  
+  **Detection**:
+  ```bash
+  sqlite3 /path/to/ritual.db 'PRAGMA integrity_check'
+  ```
+  
+  **Recovery**:
+  - Restore from most recent backup
+  - If no backup, try: `sqlite3 ritual.db ".recover" | sqlite3 recovered.db`
+  
+</Step>
+
+<Step title="File path issues">
+  
+  Check your `configs.py`:
+  ```python
+  db_sqlite_path = make_path('ritual.db')  # Correct
+  db_sqlite_path = '/absolute/path/to/ritual.db'  # Also correct
+  ```
+  
+</Step>
+
+</Steps>
+
+### MySQL Issues
+
+<Accordion title="Connection refused">
+
+**Check MySQL is running**:
+```bash
+sudo systemctl status mysql
+```
+
+**Verify connection settings** in `configs.py`:
+```python
+db_mysql_host = 'localhost'
+db_mysql_user = 'user'
+db_mysql_password = 'password'
+db_mysql_database = 'ritual'
+db_mysql_port = 3306
+```
+
+**Test connection manually**:
+```bash
+mysql -h localhost -u user -p ritual
+```
+
+</Accordion>
+
+<Accordion title="Authentication failed">
+
+**Grant proper permissions**:
+```sql
+GRANT ALL PRIVILEGES ON ritual.* TO 'user'@'localhost' IDENTIFIED BY 'password';
+FLUSH PRIVILEGES;
+```
+
+</Accordion>
+
+<Accordion title="Database not found">
+
+**Create the database**:
+```sql
+CREATE DATABASE ritual CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
+
+Ritual will create tables automatically using asagi-tables.
+
+</Accordion>
+
+## Media Download Failures
+
+### Rate Limiting
+
+**Symptoms**: HTTP 429 (Too Many Requests) or increasing 403 errors
+
+**Solutions**:
+
+<Steps>
+
+<Step title="Increase cooldown periods">
+  
+  In `configs.py`:
+  ```python
+  request_cooldown_sec = 1.5  # Increase from 1.2
+  video_cooldown_sec = 4.0    # Increase from 3.2
+  image_cooldown_sec = 2.5    # Increase from 2.2
+  ```
+  
+</Step>
+
+<Step title="Enable random sleep intervals">
+  
+  ```python
+  add_random = True  # Adds 0-1s random delay
+  ```
+  
+</Step>
+
+<Step title="Use custom headers">
+  
+  ```python
+  headers = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'}
+  ```
+  
+</Step>
+
+</Steps>
+
+### Network Timeouts
+
+**Default timeout**: 10 seconds (fetcher.py:21)
+
+**If you have slow connection**, modify `fetcher.py`:
+```python
+resp = self.session.get(url, headers=request_headers, timeout=30)  # Increase from 10
+```
+
+### HTTP Status Codes
+
+| Code | Meaning | Solution |
+|------|---------|----------|
+| 200 | Success | Normal |
+| 304 | Not Modified | Normal (cached) |
+| 404 | Not Found | Thread/file deleted |
+| 429 | Too Many Requests | Increase cooldowns |
+| 500+ | Server Error | Wait and retry |
+
+## Permission Issues
+
+### Media Directory Permissions
+
+**Error**: `Permission denied` when creating directories
+
+**Fix**:
+```bash
+chmod 775 media/
+chown -R $USER:$USER media/
+```
+
+Ritual sets directory permissions to 775 automatically (utils.py:147-148):
+```python
+os.makedirs(dir_path, mode=775, exist_ok=True)
+os.chmod(dir_path, 0o775)
+```
+
+### Database File Permissions
+
+**SQLite**:
+```bash
+chmod 664 ritual.db
+chmod 775 .  # Parent directory needs write for journal files
+```
+
+## Configuration Mistakes
+
+### Missing configs.py
+
+<Warning>
+**Error**: `ModuleNotFoundError: No module named 'configs'`
+
+**Solution**: Rename `rename_to_configs.py` to `configs.py`
+</Warning>
+
+### Invalid Regex Patterns
+
+**Error**: `re.error: ...`
+
+**Common mistakes**:
+```python
+# Wrong - unescaped parentheses
+'blacklist': '(test'
+
+# Correct
+'blacklist': '.*(test).*'
+'blacklist': '.*test.*'
+```
+
+**Test your regex**:
+```python
+import re
+pattern = '.*(home server|linux).*'
+re.search(pattern, 'my home server setup', re.IGNORECASE)
+```
+
+### Thread Text Not Archiving
+
+**Check this config**:
+```python
+boards = {
+    'g': {
+        'thread_text': True,  # Must be explicitly True or omitted (defaults to True)
+        # ...
+    }
+}
+```
+
+**To disable text archiving**:
+```python
+'thread_text': False  # Only download media
+```
+
+### Media Not Downloading
+
+**Ensure you have download configs**:
+```python
+'dl_fm_op': True,      # Download OP full media
+'dl_fm_post': True,    # Download reply full media  
+'dl_th_op': True,      # Download OP thumbnails
+'dl_th_post': True,    # Download reply thumbnails
+```
+
+**Or use regex patterns**:
+```python
+'dl_fm_thread': '.*(keyword).*',  # Download all media if thread matches
+```
+
+## Log Interpretation
+
+### Normal Operation
+
+```
+[g] 5 thread(s) are unmodified. 12 thread(s) are modified and will be queued.
+[g] Found thread [12345678]
+[g] Downloaded [full_media] media/g/full_media/1234/56/1234567890123.jpg
+[g] Updated 3 thread(s) using catalog data
+[g] Fetched 9 thread(s) fully
+```
+
+### Warning Signs
+
+<Accordion title="Not modified (304)">
+
+```
+Not modified (304) https://a.4cdn.org/g/catalog.json
+```
+
+**Meaning**: Catalog hasn't changed since last check
+
+**Status**: Normal - HTTP caching is working
+
+</Accordion>
+
+<Accordion title="Failed to get JSON">
+
+```
+Failed to get JSON (404) https://a.4cdn.org/g/thread/12345678.json
+```
+
+**Meaning**: Thread was deleted or archived
+
+**Status**: Normal - Ritual will mark it as deleted
+
+</Accordion>
+
+<Accordion title="Threads deleted by moderator">
+
+```
+[g] Threads deleted by moderator: [12345678, 87654321]
+```
+
+**Meaning**: Threads were removed from catalog and archive
+
+**Status**: Normal - automatic detection of mod deletions
+
+</Accordion>
+
+<Accordion title="File size larger than expected">
+
+```
+File size large than expected url=... expected=123456 got=234567. Skipping.
+```
+
+**Meaning**: Downloaded file is bigger than API reported
+
+**Possible causes**:
+- Cloudflare added wrapper content
+- API data was stale
+- File was modified server-side
+
+**Action**: File is skipped for safety
+
+</Accordion>
+
+### Error Messages
+
+<Accordion title="Critical error in main loop">
+
+```
+Critical error in main loop: <error details>
+<stack trace>
+Saving state...
+Saving database...
+Sleeping for 60s, maybe the issue will resolve itself by then...
+```
+
+**Action taken**: Automatic recovery attempt
+
+**Check**:
+- Network connectivity
+- Disk space (`df -h`)
+- Database health
+- Recent config changes
+
+</Accordion>
+
+### First Loop Behavior
+
+<Tip>
+On first run with `ignore_thread_cache = True`, you'll see:
+
+```
+Ignoring last modified timestamps on first loop. 150 thread(s) are modified and will be queued.
+```
+
+This is normal - Ritual processes all threads on the first loop.
+</Tip>
+
+## Performance Issues
+
+### Slow Database Writes
+
+**SQLite optimization**:
+```bash
+sqlite3 ritual.db 'VACUUM'
+```
+
+**Move to MySQL** for better concurrent performance:
+```python
+db_type = 'mysql'  # Change from 'sqlite'
+```
+
+### High Memory Usage
+
+**Cause**: Caching too many threads
+
+State files automatically prune old entries (state.py:98-106):
+- Keeps 200 entries per board max
+- Removes oldest entries first
+
+**Manually clear cache**:
+```bash
+rm cache/thread_cache.json
+rm cache/thread_stats.json
+rm cache/http_cache.json
+```
+
+### CPU Usage from Thumbnails
+
+**If using `make_thumbnails = True`**:
+
+Requires ffmpeg and ImageMagick convert:
+```bash
+which ffmpeg
+which convert
+```
+
+**Disable if not needed**:
+```python
+make_thumbnails = False
+```
